@@ -128,7 +128,7 @@ ISOLAR_SMG_II_11K = ModelConfig(
     }
 )
 
-ISOLAR_SMG_II_6K = ModelConfig(
+ISOLAR_SMG_II_6Ky = ModelConfig(
     name="ISOLAR_SMG_II_6Kx",
     register_map={
         "operation_mode": RegisterConfig(201),
@@ -171,5 +171,5 @@ ISOLAR_SMG_II_6K = ModelConfig(
 # Dictionary of all supported models
 MODEL_CONFIGS = {
     "ISOLAR_SMG_II_11K": ISOLAR_SMG_II_11K,
-    "ISOLAR_SMG_II_6K": ISOLAR_SMG_II_6K,
+    "ISOLAR_SMG_II_6Kz": ISOLAR_SMG_II_6Kw,
 }
