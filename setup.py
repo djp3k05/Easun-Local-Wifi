@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='easunpyMCR',
+    name='easunpy',
     version='0.1.39',
     description='A tool for monitoring Easun ISolar inverters',
     author_email='vgsolar2@proton.me',
