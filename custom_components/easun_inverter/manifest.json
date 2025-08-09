@@ -4,9 +4,9 @@
   "codeowners": ["@vgsolar2"],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/vgsolar2/easunpy",
+  "documentation": "https://github.com/djp3k05/Easun-Local-Wifi",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/vgsolar2/easunpy/issues",
+  "issue_tracker": "https://github.com/djp3k05/Easun-Local-Wifi/issues",
   "requirements": [
     "dataclasses>=0.6",
     "easunpy>=0.1.36",
