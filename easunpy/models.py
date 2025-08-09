@@ -1,3 +1,5 @@
+# File: easunpy/models.py
+
 from dataclasses import dataclass, field
 from enum import Enum
 import datetime
@@ -48,7 +50,7 @@ class OperatingMode(Enum):
 @dataclass
 class SystemStatus:
     operating_mode: OperatingMode
-    mode_name: str 
+    mode_name: str
     inverter_time: datetime.datetime
 
 @dataclass
@@ -63,12 +65,15 @@ class ModelConfig:
     """Complete configuration for an inverter model."""
     name: str
     register_map: Dict[str, RegisterConfig] = field(default_factory=dict)
+
     def get_address(self, register_name: str) -> Optional[int]:
         cfg = self.register_map.get(register_name)
         return cfg.address if cfg else None
+
     def get_scale_factor(self, register_name: str) -> float:
         cfg = self.register_map.get(register_name)
         return cfg.scale_factor if cfg else 1.0
+
     def process_value(self, register_name: str, value: int) -> Any:
         cfg = self.register_map.get(register_name)
         if not cfg:
@@ -78,7 +83,7 @@ class ModelConfig:
         return value * cfg.scale_factor
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Existing two supported models
+#   EXISTING MODELS
 # ──────────────────────────────────────────────────────────────────────────────
 
 ISOLAR_SMG_II_11K = ModelConfig(
@@ -162,21 +167,18 @@ ISOLAR_SMG_II_6K = ModelConfig(
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  NEW: Support for your Easun SMW 8 kW inverter
+#   NEW: Easun SMW 8KW
 # ──────────────────────────────────────────────────────────────────────────────
 
 EASUN_SMW_8KW = ModelConfig(
     name="SMW_8KW",
-    register_map={
-        # For now we clone the 11 kW mapping.  Update any addresses/scale_factors
-        # you discovered in your PCAP dumps here.
-        **ISOLAR_SMG_II_11K.register_map
-    }
+    # for now we clone the 11K map; replace these with your real register addresses/scale factors
+    register_map={**ISOLAR_SMG_II_11K.register_map}
 )
 
 # Dictionary of all supported models
 MODEL_CONFIGS: Dict[str, ModelConfig] = {
     "ISOLAR_SMG_II_11K": ISOLAR_SMG_II_11K,
     "ISOLAR_SMG_II_6K":  ISOLAR_SMG_II_6K,
-    "SMW_8KW":           EASUN_SMW_8KW,       # ← your new model
+    "SMW_8KW":           EASUN_SMW_8KW,       # ← your newly added model
 }
