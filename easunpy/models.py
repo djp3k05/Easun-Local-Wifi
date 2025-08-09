@@ -60,9 +60,10 @@ class RegisterConfig:
 
 @dataclass
 class ModelConfig:
-    """Complete configuration for an inverter model."""
     name: str
     register_map: Dict[str, RegisterConfig] = field(default_factory=dict)
+    protocol: str = "modbus"                 # <‑‑ NEW  (default keeps old behaviour)
+
     
     # Helper method to get a register address
     def get_address(self, register_name: str) -> Optional[int]:
@@ -172,67 +173,14 @@ ISOLAR_SMG_II_6K = ModelConfig(
 # Based on PCAP analysis showing QPIRI, QLED, QBEQI, QDOP commands
 EASUN_SMW_8K = ModelConfig(
     name="EASUN_SMW_8K",
-    register_map={
-        # Operating mode from QLED response
-        "operation_mode": RegisterConfig(201),  # From QLED: position indicates mode
-        
-        # Battery parameters - from QBEQI response
-        # QBEQI response: (0 060 030 150 030 58.40 224 120 0 0000)
-        "battery_voltage": RegisterConfig(280, 0.1),  # From QBEQI: 58.40V
-        "battery_current": RegisterConfig(281, 0.1),  # Calculated from power/voltage
-        "battery_power": RegisterConfig(282),  # Calculated value
-        "battery_soc": RegisterConfig(283),  # State of charge percentage
-        "battery_temperature": RegisterConfig(284),  # Battery temperature
-        
-        # PV parameters - from QPIRI and status
-        "pv_total_power": RegisterConfig(302),  # Total PV power
-        "pv_charging_power": RegisterConfig(303),  # PV charging power
-        "pv_charging_current": RegisterConfig(304, 0.1),  # PV charging current
-        "pv_temperature": RegisterConfig(305),  # PV/Inverter temperature
-        
-        # PV1 parameters
-        "pv1_voltage": RegisterConfig(351, 0.1),  
-        "pv1_current": RegisterConfig(352, 0.1),  
-        "pv1_power": RegisterConfig(353),
-        
-        # PV2 parameters (if dual MPPT)
-        "pv2_voltage": RegisterConfig(389, 0.1),
-        "pv2_current": RegisterConfig(390, 0.1),
-        "pv2_power": RegisterConfig(391),
-        
-        # Grid parameters - from QPIRI response
-        # QPIRI: (230.0 47.8 230.0 50.0 47.8 11000 11000 48.0 48.0 47.0 56.4 54.0 ...)
-        "grid_voltage": RegisterConfig(338, 0.1),  # Grid voltage: 230.0V
-        "grid_current": RegisterConfig(339, 0.1),  # Grid current
-        "grid_power": RegisterConfig(340),  # Grid power
-        "grid_frequency": RegisterConfig(341, 0.01),  # Grid frequency: 50.0Hz
-        
-        # Output parameters - from QPIRI response
-        "output_voltage": RegisterConfig(346, 0.1),  # Output voltage: 230.0V
-        "output_current": RegisterConfig(347, 0.1),  # Output current: 47.8A
-        "output_power": RegisterConfig(348),  # Output power: 11000W
-        "output_apparent_power": RegisterConfig(349),  # Output VA: 11000VA
-        "output_load_percentage": RegisterConfig(350),  # Load percentage
-        "output_frequency": RegisterConfig(351, 0.01),  # Output frequency: 50.0Hz
-        
-        # Time registers (if supported)
-        "time_register_0": RegisterConfig(696, processor=int),  # Year
-        "time_register_1": RegisterConfig(697, processor=int),  # Month
-        "time_register_2": RegisterConfig(698, processor=int),  # Day
-        "time_register_3": RegisterConfig(699, processor=int),  # Hour
-        "time_register_4": RegisterConfig(700, processor=int),  # Minute
-        "time_register_5": RegisterConfig(701, processor=int),  # Second
-        
-        # Energy counters
-        "pv_energy_today": RegisterConfig(702, 0.01),  # kWh generated today
-        "pv_energy_total": RegisterConfig(703, 0.01),  # Total kWh generated
-    }
+    protocol="pi17",                         # <‑‑ NEW  (key line)
+    register_map={}                          # register map NOT used for PI‑17
 )
 
-# EASUN SMW 11kW uses the same configuration as 8kW
 EASUN_SMW_11K = ModelConfig(
     name="EASUN_SMW_11K",
-    register_map=EASUN_SMW_8K.register_map.copy()  # Same as 8kW model
+    protocol="pi17",
+    register_map={}
 )
 
 # Dictionary of all supported models
