@@ -5,7 +5,7 @@ setup(
     version='0.1.39',
     description='A tool for monitoring Easun ISolar inverters',
     author_email='vgsolar2@proton.me',
-    url='https://github.com/vgsolar2/easunpy',
+    url='https://github.com/djp3k05/Easun-Local-Wifi',
     packages=find_packages(),
     install_requires=[
         'rich',  # Add other dependencies here
