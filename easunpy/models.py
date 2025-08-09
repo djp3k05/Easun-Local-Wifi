@@ -168,8 +168,36 @@ ISOLAR_SMG_II_6K = ModelConfig(
     }
 )
 
+ISOLAR_SMW_8K = ModelConfig(
+    name="ISOLAR_SMW_8K",
+    register_map={
+        "operation_mode": RegisterConfig(201),
+        "battery_voltage": RegisterConfig(277, 0.1),
+        "battery_current": RegisterConfig(278, 0.1),
+        "battery_power": RegisterConfig(279),
+        "battery_soc": RegisterConfig(280),
+        "battery_temperature": RegisterConfig(281),
+        "pv_total_power": RegisterConfig(302),
+        "pv_charging_power": RegisterConfig(303),
+        "pv_charging_current": RegisterConfig(304, 0.1),
+        "pv1_voltage": RegisterConfig(351, 0.1),
+        "pv1_current": RegisterConfig(352, 0.1),
+        "pv1_power": RegisterConfig(353),
+        "grid_voltage": RegisterConfig(600, 0.1),
+        "grid_power": RegisterConfig(602),
+        "grid_frequency": RegisterConfig(607, 0.01),
+        "output_voltage": RegisterConfig(603, 0.1),
+        "output_current": RegisterConfig(604, 0.1),
+        "output_power": RegisterConfig(606),
+        "output_apparent_power": RegisterConfig(605),
+        "output_load_percentage": RegisterConfig(608),
+        "output_frequency": RegisterConfig(607, 0.01),
+    }
+)
+
 # Dictionary of all supported models
 MODEL_CONFIGS = {
     "ISOLAR_SMG_II_11K": ISOLAR_SMG_II_11K,
     "ISOLAR_SMG_II_6K": ISOLAR_SMG_II_6K,
+    "ISOLAR_SMW_8K": ISOLAR_SMW_8K,
 }
