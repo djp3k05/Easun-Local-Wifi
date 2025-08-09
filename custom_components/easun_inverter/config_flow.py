@@ -12,7 +12,7 @@ from datetime import timedelta
 from . import DOMAIN
 from easunpy.discover import discover_device
 from easunpy.utils import get_local_ip
-from easunpy.models import MODEL_CONFIGS   # ← changed from MODEL_CONF
+from easunpy.models import MODEL_CONFIGS
 
 DEFAULT_SCAN_INTERVAL = 30  # Default to 30 seconds
 _LOGGER = logging.getLogger(__name__)
@@ -28,35 +28,42 @@ class EasunInverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Get the options flow for this handler."""
         return OptionsFlowHandler(config_entry)
 
-    async def async_step_user(self, user_input=None) -> FlowResult:
-        """Handle the initial step of user setup."""
+    async def async_step_user(self, user_input=None):
+        """Handle a flow initialized by the user."""
         errors = {}
 
         if user_input is not None:
-            inverter_ip = user_input["inverter_ip"]
-            local_ip = user_input["local_ip"]
+            # Validate the input data
+            inverter_ip = user_input.get("inverter_ip")
+            local_ip = user_input.get("local_ip")
             scan_interval = user_input.get("scan_interval", DEFAULT_SCAN_INTERVAL)
-            model = user_input["model"]
+            model = user_input.get("model")  # Get model from input
+            
+            _LOGGER.debug(f"Processing user input with model: {model}")
+            
             if not inverter_ip or not local_ip:
                 errors["base"] = "missing_ip"
             else:
+                entry_data = {
+                    "inverter_ip": inverter_ip,
+                    "local_ip": local_ip,
+                    "scan_interval": scan_interval,
+                    "model": model,
+                }
+                _LOGGER.debug(f"Creating entry with data: {entry_data}")
                 return self.async_create_entry(
                     title=f"Easun Inverter ({inverter_ip})",
-                    data={
-                        "inverter_ip": inverter_ip,
-                        "local_ip": local_ip,
-                        "scan_interval": scan_interval,
-                        "model": model,
-                    },
+                    data=entry_data,
                 )
 
-        # attempt discovery on blank form
+        # Attempt to discover the IPs
         inverter_ip = discover_device()
         local_ip = get_local_ip()
+
         if not inverter_ip or not local_ip:
             errors["base"] = "discovery_failed"
 
-        # show form with dynamic model list
+        # Add model selection to the form
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema({
@@ -64,11 +71,11 @@ class EasunInverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required("local_ip", default=local_ip): str,
                 vol.Optional("scan_interval", default=DEFAULT_SCAN_INTERVAL): vol.All(
                     vol.Coerce(int),
-                    vol.Range(min=1, max=3600),
+                    vol.Range(min=1, max=3600)
                 ),
                 vol.Required("model", default="ISOLAR_SMG_II_11K"): vol.In(list(MODEL_CONFIGS.keys())),
             }),
-            errors=errors,
+            errors=errors
         )
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
