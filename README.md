@@ -1,13 +1,6 @@
 # EasunPy
 
-**DISCLAIMER:** This is a personal project for local monitoring of Easun ISolar inverters and has no affiliation with EASUN POWER CO., LTD or any related companies. This project is shared "as is" without any warranty or commitment to maintenance. Use at your own risk.
-
-This project is open source and shared with no commercial interest. It is intended for personal use and educational purposes only.
-
-EasunPy is a Python library and monitoring tool for Easun ISolar inverters. It provides both a command-line interface for monitoring and a Home Assistant integration through HACS.
-
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=vgsolar2&repository=easunpy&category=green+energy)
-
+**DISCLAIMER:** Do not use this!!! just playing with this.
 ## Features
 
 - Auto-discovery of inverters on the network
