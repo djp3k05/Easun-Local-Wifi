@@ -89,7 +89,7 @@ class ModelConfig:
 
 # Define model configurations
 ISOLAR_SMG_II_11K = ModelConfig(
-    name="ISOLAR_SMG_II_11Kx",
+    name="ISOLAR_SMG_II_11K",
     register_map={
         "operation_mode": RegisterConfig(201),
         "battery_voltage": RegisterConfig(277, 0.1),
@@ -128,8 +128,8 @@ ISOLAR_SMG_II_11K = ModelConfig(
     }
 )
 
-ISOLAR_SMG_II_6Ky = ModelConfig(
-    name="ISOLAR_SMG_II_6Kx",
+ISOLAR_SMG_II_6K = ModelConfig(
+    name="ISOLAR_SMG_II_6K",
     register_map={
         "operation_mode": RegisterConfig(201),
         "battery_voltage": RegisterConfig(215, 0.1),
@@ -171,5 +171,5 @@ ISOLAR_SMG_II_6Ky = ModelConfig(
 # Dictionary of all supported models
 MODEL_CONFIGS = {
     "ISOLAR_SMG_II_11K": ISOLAR_SMG_II_11K,
-    "ISOLAR_SMG_II_6Kz": ISOLAR_SMG_II_6Kw,
+    "ISOLAR_SMG_II_6K": ISOLAR_SMG_II_6K,
 }
