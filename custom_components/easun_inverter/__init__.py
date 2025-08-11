@@ -1,4 +1,3 @@
-# custom_components/easun_inverter/__init__.py
 """The Easun ISolar Inverter integration."""
 from __future__ import annotations
 
@@ -22,8 +21,6 @@ DOMAIN = "easun_inverter"
 # List of platforms to support. There should be a matching .py file for each,
 # eg. switch.py and sensor.py
 PLATFORMS: list[Platform] = [Platform.SENSOR]
-
-DOMAIN = "easun_inverter"
 
 # Use config_entry_only_config_schema since we only support config flow
 CONFIG_SCHEMA = cv.config_entry_only_config_schema("easun_inverter")
@@ -51,7 +48,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the Easun ISolar Inverter component."""
-    _LOGGER.debug("Set up the Easun ISolar Inverter component")
+    _LOGGER.debug("Setting up Easun ISolar Inverter component")
     return True
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -63,7 +60,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     model = entry.data["model"]  # No default - should be required
     _LOGGER.warning(f"Setting up inverter with model: {model}, config data: {entry.data}")
     
-    # Domain data
+    # Initialize domain data
     hass.data.setdefault(DOMAIN, {})
     
     async def handle_register_scan(call: ServiceCall) -> None:
@@ -80,115 +77,119 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator = entry_data["coordinator"]
         inverter = coordinator._isolar
         
-        # Check protocol
-        if coordinator.model_config.protocol == "ascii":
-            _LOGGER.warning("Register scan not supported for ASCII protocol models like Axpert MKS2")
-            hass.data[DOMAIN]["register_scan"] = {
-                "timestamp": datetime.now().isoformat(),
-                "error": "Not supported for ASCII protocol"
-            }
-            return
-
         _LOGGER.debug(f"Starting register scan from {start} for {count} registers")
         
         # Create register groups in chunks of 10
         register_groups = []
         for chunk_start in range(start, start + count, 10):
-            chunk_size = min(10, start + count - chunk_start)  # Handle small gaps
+            chunk_size = min(10, start + count - chunk_start)  # Handle last chunk
             register_groups.append((chunk_start, chunk_size))
         
+        # Read all registers in bulk
         results = []
-        for group_start, group_count in register_groups:
-            request = create_request(0x0777, 0x0001, 0x01, 0x03, group_start, group_count)
-            response_hex = run_single_request(entry.data["inverter_ip"], entry.data["local_ip"], request)
-            
-            if response_hex:
-                decoded = decode_modbus_response(response_hex, group_count)
-                for i in range(group_count):
-                    reg_address = group_start + i
-                    value = decoded[i] if i < len(decoded) else None
-                    results.append({
-                        "register": reg_address,
-                        "hex": f"0x{reg_address:04x}",
-                        "value": value,
-                        "response": response_hex if i == 0 else None  # Only store response once per group
-                    })
-            else:
-                for i in range(group_count):
-                    results.append({
-                        "register": group_start + i,
-                        "hex": f"0x{group_start + i:04x}",
-                        "value": None,
-                        "response": "No response"
-                    })
-            
-            await asyncio.sleep(0.5)  # Delay between groups
+        try:
+            responses = await inverter._read_registers_bulk(register_groups, "Int")
+            if responses:
+                for group_idx, response in enumerate(responses):
+                    if response:  # Check if we got values for this group
+                        chunk_start = register_groups[group_idx][0]
+                        for i, value in enumerate(response):
+                            if value != 0:  # Only store non-zero values
+                                reg = chunk_start + i
+                                results.append({
+                                    "register": reg,
+                                    "hex": f"0x{reg:04x}",
+                                    "value": value,
+                                    "raw": f"Register {reg}: {value}"
+                                })
+        except Exception as e:
+            _LOGGER.error(f"Error reading registers: {e}")
         
-        # Store results
+        # Store results in hass.data for the sensor
         scan_data = {
             "timestamp": datetime.now().isoformat(),
             "results": results,
-            "start": start,
+            "start_register": start,
             "count": count
         }
-        hass.data[DOMAIN]["register_scan"] = scan_data
+        hass.data[DOMAIN]["last_scan"] = scan_data
         
-        # Log summary
-        valid_responses = [r for r in results if r["value"] is not None]
-        _LOGGER.info(f"Register scan complete. Found {len(valid_responses)} valid values")
+        # Save to www folder
+        www_dir = hass.config.path("www")
+        try:
+            if not os.path.exists(www_dir):
+                await makedirs(www_dir)
+            
+            filename = os.path.join(www_dir, "easun_register_scan.json")
+            async with async_open(filename, 'w') as f:
+                await f.write(json.dumps(scan_data, indent=2))
+            _LOGGER.info(f"Scan complete. Found {len(results)} registers with values")
+        except Exception as e:
+            _LOGGER.error(f"Error saving scan results: {e}")
 
     async def handle_device_scan(call: ServiceCall) -> None:
         """Handle the device ID scan service."""
         start_id = call.data.get("start_id", 0)
-        end_id = call.data.get("end_id", 255)
+        end_id = call.data.get("end_id", 5)
         
         entry_data = hass.data[DOMAIN].get(entry.entry_id)
-        if not entry_data:
-            _LOGGER.error("No entry data found")
+        if not entry_data or "coordinator" not in entry_data:
+            _LOGGER.error("No coordinator found. Is the integration set up?")
             return
             
-        coordinator = entry_data.get("coordinator")
-        if not coordinator:
-            _LOGGER.error("No coordinator found")
-            return
-            
-        if coordinator.model_config.protocol == "ascii":
-            _LOGGER.warning("Device scan not supported for ASCII protocol models")
-            hass.data[DOMAIN]["device_scan"] = {
-                "timestamp": datetime.now().isoformat(),
-                "error": "Not supported for ASCII protocol"
-            }
-            return
-
-        _LOGGER.debug(f"Starting device ID scan from {start_id} to {end_id}")
+        coordinator = entry_data["coordinator"]
+        inverter = coordinator._isolar
+        
+        _LOGGER.debug(f"Starting device scan from ID {start_id} to {end_id}")
         
         results = []
-        for device_id in range(start_id, end_id + 1):
-            request = create_request(0x0777, 0x0001, device_id, 0x03, 0, 1)
-            response_hex = run_single_request(entry.data["inverter_ip"], entry.data["local_ip"], request)
-            
-            result = {
-                "device_id": device_id,
-                "hex": f"0x{device_id:02x}",
-                "request": request,
-                "response": response_hex,
-            }
         
-            ERROR_RESPONSE = "00010002ff04"  # Protocol error response
-            
-            if response_hex: 
-                if response_hex[4:] == ERROR_RESPONSE:
-                    result["status"] = "Protocol Error"
-                    _LOGGER.debug(f"Device 0x{device_id:02x} gave protocol error: {response_hex}")
+        for device_id in range(start_id, end_id + 1):
+            try:
+                # Create request
+                request = [create_request(
+                    inverter._get_next_transaction_id(),
+                    0x0001, device_id, 0x03,
+                    0x0115,
+                    1
+                )]
+                
+                # Send request and get raw response
+                responses = await inverter.client.send_bulk(request)
+                _LOGGER.debug(f"Responses: {responses}")
+                response_hex = responses[0] if responses else None
+                
+                result = {
+                    "device_id": device_id,
+                    "hex": f"0x{device_id:02x}",
+                    "request": request,
+                    "response": response_hex,
+                }
+        
+                ERROR_RESPONSE = "00010002ff04"  # Protocol error response
+                
+                if response_hex: 
+                    if response_hex[4:] == ERROR_RESPONSE:
+                        result["status"] = "Protocol Error"
+                        _LOGGER.debug(f"Device 0x{device_id:02x} gave protocol error: {response_hex}")
+                    else:
+                        result["status"] = "Valid Response"
+                        _LOGGER.debug(f"Device 0x{device_id:02x} gave valid response: {response_hex}")
                 else:
-                    result["status"] = "Valid Response"
-                    result["decoded"] = decode_modbus_response(response_hex, 1)
-                    _LOGGER.debug(f"Device 0x{device_id:02x} gave valid response: {response_hex}")
-            else:
-                _LOGGER.debug(f"Device 0x{device_id:02x} gave no response")
-                result["status"] = "No Response"
-            
-            results.append(result)
+                    _LOGGER.debug(f"Device 0x{device_id:02x} gave no response")
+                    result["status"] = "No Response"
+                
+                results.append(result)
+                
+            except Exception as e:
+                _LOGGER.debug(f"Error with device ID {device_id:02x}: {e}")
+                results.append({
+                    "device_id": device_id,
+                    "hex": f"0x{device_id:02x}",
+                    "status": f"Error: {str(e)}",
+                    "request": request if 'request' in locals() else None,
+                    "response": None
+                })
             
             await asyncio.sleep(0.1)  # Small delay between requests
         
@@ -205,7 +206,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         valid_responses = [r for r in results if r["status"] == "Valid Response"]
         _LOGGER.info(f"Device scan complete. Found {len(valid_responses)} valid responses")
         for r in valid_responses:
-            _LOGGER.info(f"Device {r['hex']}: Request={r['request']}, Response={r['response']}, Decoded={r['decoded']}")
+            _LOGGER.info(f"Device {r['hex']}: Request={r['request']}, Response={r['response']}, Decoded={r.get('decoded')}")
 
     # Register both services
     hass.services.async_register(DOMAIN, "register_scan", handle_register_scan)
@@ -234,4 +235,4 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Removing entry data")
         hass.data[DOMAIN].pop(entry.entry_id)
     
-    return unload_ok
+    return unload_ok 
