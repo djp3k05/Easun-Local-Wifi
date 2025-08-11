@@ -21,37 +21,19 @@ class AsyncAsciiInverter:
 
     async def get_all_data(self) -> Tuple[Optional[BatteryData], Optional[PVData], Optional[GridData], Optional[OutputData], Optional[SystemStatus]]:
         """
-        Fetches all data from the inverter by sending multiple ASCII commands.
-        This method uses a non-blocking connection pattern.
+        Fetches all data from the inverter by sending ASCII commands sequentially.
         """
-        # Ensure the server is running and trigger a connection attempt.
-        # This will not block, allowing HA to start up.
         await self.client.ensure_connection()
 
-        # If not connected, log it and wait for the next update cycle.
-        # The background server will handle the incoming connection when it arrives.
         if not self.client.is_connected():
             logger.info("Inverter is not connected yet. Waiting for connection on the next update cycle.")
             return None, None, None, None, None
 
         try:
-            # If connected, proceed to fetch data.
-            qpgis_task = self.client.send_command("QPIGS")
-            qmod_task = self.client.send_command("QMOD")
-
-            results = await asyncio.gather(qpgis_task, qmod_task, return_exceptions=True)
-            
-            qpgis_res, qmod_res = results
-            
-            if isinstance(qpgis_res, Exception):
-                logger.error(f"Error executing QPIGS command: {qpgis_res}")
-                await self.client.disconnect()
-                return None, None, None, None, None
-
-            if isinstance(qmod_res, Exception):
-                logger.error(f"Error executing QMOD command: {qmod_res}")
-                await self.client.disconnect()
-                return None, None, None, None, None
+            # Run commands sequentially to avoid race conditions
+            qpgis_res = await self.client.send_command("QPIGS")
+            await asyncio.sleep(0.5) # Small delay between commands
+            qmod_res = await self.client.send_command("QMOD")
 
             qpgis_data = parse_qpgis(qpgis_res)
             op_mode = parse_qmod(qmod_res)
@@ -85,13 +67,13 @@ class AsyncAsciiInverter:
             
             grid = GridData(
                 voltage=qpgis_data.get('grid_voltage', 0.0),
-                power=0, # Not provided by QPIGS
+                power=0,
                 frequency=int(qpgis_data.get('grid_frequency', 0.0) * 100),
             )
 
             output = OutputData(
                 voltage=qpgis_data.get('output_voltage', 0.0),
-                current=0.0, # Not provided by QPIGS
+                current=0.0,
                 power=qpgis_data.get('output_power', 0),
                 apparent_power=qpgis_data.get('output_apparent_power', 0),
                 load_percentage=qpgis_data.get('output_load_percentage', 0),
@@ -107,7 +89,7 @@ class AsyncAsciiInverter:
             return battery, pv, grid, output, status
 
         except Exception as e:
-            logger.error(f"General error in get_all_data for ASCII inverter: {e}")
+            logger.error(f"Error getting all data for ASCII inverter: {e}")
             await self.client.disconnect()
             return None, None, None, None, None
             
