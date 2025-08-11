@@ -1,432 +1,352 @@
-"""
-async_isolar.py – unified driver for Easun / ISolar / Voltronic inverters
-
-Supports two wire‑protocols that share the same Home‑Assistant / CLI
-interface:
-
-* Modbus‑TCP (default for SMG‑II and most rebadged models)
-* PI‑17 ASCII (“QPIGS”, “QPIRI”, …) used by Easun SMW 8 kW / 11 kW
-
-The right transport is picked at runtime from MODEL_CONFIGS[…].protocol.
-"""
-
-from __future__ import annotations
-
-import asyncio
-import datetime as _dt
+# async_isolar.py
 import logging
-from typing import Dict, List, Optional, Tuple, Any
-
+from typing import List, Optional, Dict, Tuple, Any
 from .async_modbusclient import AsyncModbusClient
-from .async_piclient     import AsyncPIClient               # <- new
-from .modbusclient       import create_request, decode_modbus_response
-from .pi_parsers         import (                           # <- new
-    parse_qpigs,
-    parse_qmod,
-    parse_qbeqi,
-    parse_qpiri,
-)
+from .modbusclient import create_request, decode_modbus_response
+from .isolar import BatteryData, PVData, GridData, OutputData, SystemStatus, OperatingMode
+import datetime
+from .models import MODEL_CONFIGS, ModelConfig, ProtocolType
+from enum import Enum
 
-from .isolar import (
-    BatteryData,
-    PVData,
-    GridData,
-    OutputData,
-    SystemStatus,
-    OperatingMode,
-)
-from .models import MODEL_CONFIGS, ModelConfig
-
-_LOGGER = logging.getLogger(__name__)
-
+# Set up logging
+logger = logging.getLogger(__name__)
 
 class AsyncISolar:
-    """High‑level asynchronous wrapper that delivers *parsed* data tuples."""
-
-    # --------------------------------------------------------------------- #
-    # construction / configuration
-    # --------------------------------------------------------------------- #
-
-    def __init__(
-        self,
-        inverter_ip: str,
-        local_ip: str,
-        model: str = "ISOLAR_SMG_II_11K",
-    ):
+    def __init__(self, inverter_ip: str, local_ip: str, model: str = "ISOLAR_SMG_II_11K"):
+        self.client = AsyncModbusClient(inverter_ip=inverter_ip, local_ip=local_ip)
+        self._transaction_id = 0x0772
+        
         if model not in MODEL_CONFIGS:
-            raise ValueError(
-                f"Unknown inverter model '{model}'. "
-                f"Supported: {list(MODEL_CONFIGS)}"
-            )
+            raise ValueError(f"Unknown inverter model: {model}. Available models: {list(MODEL_CONFIGS.keys())}")
+        
+        self.model = model
+        self.model_config = MODEL_CONFIGS[model]
+        logger.warning(f"AsyncISolar initialized with model: {model}")
 
-        self.model: str = model
-        self.model_config: ModelConfig = MODEL_CONFIGS[model]
-
-        # choose the correct transport
-        if self.model_config.protocol == "pi17":
-            self.client: AsyncModbusClient | AsyncPIClient = AsyncPIClient(
-                inverter_ip=inverter_ip, local_ip=local_ip
-            )
-        else:  # default: Modbus
-            self.client = AsyncModbusClient(
-                inverter_ip=inverter_ip, local_ip=local_ip
-            )
-
-        self._transaction_id: int = 0x0772
-        _LOGGER.info(
-            "AsyncISolar initialised – model=%s, protocol=%s",
-            self.model,
-            self.model_config.protocol,
-        )
-
-    def update_model(self, model: str) -> None:
-        """Hot‑swap the model (and therefore protocol + register map)."""
+    def update_model(self, model: str):
+        """Update the model configuration."""
         if model not in MODEL_CONFIGS:
-            raise ValueError(f"Unknown inverter model '{model}'")
-
+            raise ValueError(f"Unknown inverter model: {model}. Available models: {list(MODEL_CONFIGS.keys())}")
+        
+        logger.warning(f"Updating AsyncISolar to model: {model}")
         self.model = model
         self.model_config = MODEL_CONFIGS[model]
 
-        # Re‑create transport if protocol changed
-        proto = self.model_config.protocol
-        if proto == "pi17" and not isinstance(self.client, AsyncPIClient):
-            self.client = AsyncPIClient(
-                inverter_ip=self.client.inverter_ip,
-                local_ip=self.client.local_ip,
-            )
-        elif proto == "modbus" and not isinstance(
-            self.client, AsyncModbusClient
-        ):
-            self.client = AsyncModbusClient(
-                inverter_ip=self.client.inverter_ip,
-                local_ip=self.client.local_ip,
-            )
-
-        _LOGGER.info("AsyncISolar switched to model=%s (protocol=%s)", model, proto)
-
-    # --------------------------------------------------------------------- #
-    # public API
-    # --------------------------------------------------------------------- #
-
-    async def get_all_data(
-        self,
-    ) -> Tuple[
-        Optional[BatteryData],
-        Optional[PVData],
-        Optional[GridData],
-        Optional[OutputData],
-        Optional[SystemStatus],
-    ]:
-        """
-        Return a *single* coherent snapshot of inverter metrics.
-
-        The tuple layout is constant across protocols.
-        """
-        if self.model_config.protocol == "pi17":
-            return await self._get_all_data_pi17()
-        return await self._get_all_data_modbus()
-
-    # --------------------------------------------------------------------- #
-    # ------------------------  PI‑17   implementation  ------------------- #
-    # --------------------------------------------------------------------- #
-
-    async def _get_all_data_pi17(
-        self,
-    ) -> Tuple[
-        Optional[BatteryData],
-        Optional[PVData],
-        Optional[GridData],
-        Optional[OutputData],
-        Optional[SystemStatus],
-    ]:
-        """
-        Poll the four mandatory PI‑17 commands and build the data classes.
-
-        Commands issued (one TCP session):
-          QPIGS – instantaneous measurements
-          QMOD  – operating mode
-          QBEQI – battery equalisation (gives SoC etc.)
-          QPIRI – rating info (some fields reused for sensors)
-
-        Only the fields actually surfaced as HA entities are parsed.
-        """
-
-        cmds: List[str] = ["QPIGS", "QMOD", "QBEQI", "QPIRI"]
-        replies: List[str] = await self.client.send_bulk(cmds)
-
-        if len(replies) != 4:
-            _LOGGER.error("PI‑17: missing replies – got %s", replies)
-            return (None, None, None, None, None)
-
-        # --- first level parsing -------------------------------------------------
-        try:
-            r_qpigs = parse_qpigs(replies[0])
-            mode_raw = parse_qmod(replies[1])
-            r_qbeqi = parse_qbeqi(replies[2])
-            # r_qbeqi currently only used for SoC – keep for extensions
-            r_qpiri = parse_qpiri(replies[3])
-        except Exception as exc:
-            _LOGGER.error("PI‑17 parse error: %s", exc)
-            return (None, None, None, None, None)
-
-        # --- build dataclasses ---------------------------------------------------
-        battery = BatteryData(
-            voltage=r_qpigs["battery_voltage"],
-            current=r_qpigs["battery_chg_current"],
-            power=int(
-                r_qpigs["battery_chg_current"] * r_qpigs["battery_voltage"]
-            ),
-            soc=r_qpigs["battery_soc"],
-            temperature=r_qpigs["inverter_temp"],
-        )
-
-        pv = PVData(
-            total_power=r_qpigs["pv_power"],
-            charging_power=r_qpigs["pv_power"],
-            charging_current=r_qpigs["pv_current"],
-            temperature=r_qpigs["inverter_temp"],
-            pv1_voltage=r_qpigs["pv_voltage"],
-            pv1_current=r_qpigs["pv_current"],
-            pv1_power=r_qpigs["pv_power"],
-            pv2_voltage=0.0,
-            pv2_current=0,
-            pv2_power=0,
-            pv_generated_today=0,
-            pv_generated_total=0,
-        )
-
-        grid = GridData(
-            voltage=r_qpigs["grid_voltage"],
-            power=r_qpigs["output_active_pow"],  # imported (+) / exported (‑)
-            frequency=int(r_qpigs["grid_frequency"] * 100),  # centi‑Hz
-        )
-
-        output = OutputData(
-            voltage=r_qpigs["output_voltage"],
-            current=0.0,
-            power=r_qpigs["output_active_pow"],
-            apparent_power=r_qpigs["output_apparent_pow"],
-            load_percentage=r_qpigs["load_percent"],
-            frequency=int(r_qpigs["output_frequency"] * 100),
-        )
-
-        op_mode = (
-            OperatingMode(mode_raw)
-            if mode_raw in OperatingMode._value2member_map_
-            else OperatingMode.SUB
-        )
-
-        status = SystemStatus(
-            operating_mode=op_mode,
-            mode_name=mode_raw,
-            inverter_time=None,
-        )
-
-        return battery, pv, grid, output, status
-
-    # --------------------------------------------------------------------- #
-    # ------------------------  Modbus implementation  -------------------- #
-    # --------------------------------------------------------------------- #
-
-    # (all code below is lifted from the original async_isolar.py with only
-    #  trivial renames; no functional changes)
-
     def _get_next_transaction_id(self) -> int:
+        """Get next transaction ID and increment counter."""
         current_id = self._transaction_id
-        self._transaction_id = (self._transaction_id + 1) & 0xFFFF
+        self._transaction_id = (self._transaction_id + 1) & 0xFFFF  # Wrap around at 0xFFFF
         return current_id
 
-    async def _get_all_data_modbus(
-        self,
-    ) -> Tuple[
-        Optional[BatteryData],
-        Optional[PVData],
-        Optional[GridData],
-        Optional[OutputData],
-        Optional[SystemStatus],
-    ]:
-        """Original Modbus bulk‑read path."""
-
-        register_groups = self._create_register_groups()
-        if not register_groups:  # model without register map (e.g. SMW)
-            _LOGGER.warning("Model %s has no Modbus register map", self.model)
-            return (None, None, None, None, None)
-
-        raw_groups = await self._read_registers_bulk(register_groups)
-        if not raw_groups:
-            return (None, None, None, None, None)
-
-        # map raw words → logical names → scaled values
-        values: Dict[str, Any] = {}
-        for grp_idx, (start, count) in enumerate(register_groups):
-            data = raw_groups[grp_idx]
-            if data is None:
-                continue
-
-            for reg_name, cfg in self.model_config.register_map.items():
-                if start <= cfg.address < start + count:
-                    idx = cfg.address - start
-                    if idx < len(data):
-                        values[reg_name] = self.model_config.process_value(
-                            reg_name, data[idx]
-                        )
-
-        return (
-            self._create_battery_data(values),
-            self._create_pv_data(values),
-            self._create_grid_data(values),
-            self._create_output_data(values),
-            self._create_system_status(values),
-        )
-
-    # ------------------------------------------------------------------ #
-    # ------------ helper methods (unchanged from original) -------------#
-    # ------------------------------------------------------------------ #
-
-    async def _read_registers_bulk(
-        self,
-        register_groups: List[Tuple[int, int]],
-        data_format: str = "Int",
-    ) -> List[Optional[List[int]]]:
-        """Send several Modbus requests in one TCP session."""
+    async def _read_registers_bulk(self, register_groups: list[tuple[int, int]], data_format: str = "Int") -> list[Optional[list[int]]]:
+        """Read multiple groups of registers in a single connection."""
         try:
+            # Create requests for each register group
             requests = [
-                create_request(
-                    self._get_next_transaction_id(),
-                    0x0001,
-                    0x00,
-                    0x03,
-                    start,
-                    count,
-                )
+                create_request(self._get_next_transaction_id(), 0x0001, unit_id=0x00, function_code=0x03, register_address=start, register_count=count)
                 for start, count in register_groups
             ]
-            _LOGGER.debug("Modbus bulk read: %s", register_groups)
+            
+            logger.debug(f"Sending bulk request for register groups: {register_groups}")
             responses = await self.client.send_bulk(requests)
-
-            out: List[Optional[List[int]]] = [None] * len(register_groups)
-            for i, (resp, (_, cnt)) in enumerate(zip(responses, register_groups)):
-                if not resp:
-                    _LOGGER.warning("Empty response for group %s", register_groups[i])
-                    continue
+             
+            # Initialize results array with None values
+            decoded_groups = [None] * len(register_groups)
+            
+            # Process each response individually
+            for i, (response, (_, count)) in enumerate(zip(responses, register_groups)):
                 try:
-                    out[i] = decode_modbus_response(resp, cnt, data_format)
-                except Exception as exc:  # pragma: no cover
-                    _LOGGER.warning("Decode failed for group %s: %s", register_groups[i], exc)
-            return out
-        except Exception as exc:  # pragma: no cover
-            _LOGGER.error("Bulk read failed: %s", exc)
+                    if response:  # Only decode if we got a response
+                        decoded = decode_modbus_response(response, count, data_format)
+                        logger.debug(f"Decoded values for group {i}: {decoded}")
+                        decoded_groups[i] = decoded
+                    else:
+                        logger.warning(f"No response for register group {register_groups[i]}")
+                except Exception as e:
+                    logger.warning(f"Failed to decode register group {register_groups[i]}: {e}")
+                    # Keep None for this group
+                
+            return decoded_groups
+            
+        except Exception as e:
+            logger.error(f"Error reading register groups: {str(e)}")
             return [None] * len(register_groups)
 
-    # ------------ register grouping & dataclass construction ------------ #
+    async def _query_ascii_commands(self, commands: list[str]) -> Dict[str, str]:
+        responses_dict = {}
+        hex_commands = []
+        for cmd in commands:
+            packet = create_request(self._get_next_transaction_id(), ascii_command=cmd)
+            hex_commands.append(packet)
 
-    def _create_register_groups(self) -> List[Tuple[int, int]]:
-        addresses = sorted(
-            cfg.address
-            for cfg in self.model_config.register_map.values()
-            if cfg.address > 0
-        )
+        raw_responses = await self.client.send_bulk(hex_commands)
+
+        for cmd, raw_resp in zip(commands, raw_responses):
+            if raw_resp:
+                parsed = decode_modbus_response(raw_resp, is_ascii=True)
+                if isinstance(parsed, str) and parsed.startswith('('):
+                    responses_dict[cmd] = parsed
+                else:
+                    logger.warning(f"Invalid ASCII response for {cmd}: {parsed}")
+            else:
+                logger.warning(f"No response for command {cmd}")
+
+        return responses_dict
+
+    def _parse_ascii_responses(self, responses: Dict[str, str]) -> Dict[str, Any]:
+        values = {}
+
+        # Parse QPIGS
+        qpigs = responses.get('QPIGS')
+        if qpigs:
+            fields = qpigs[1:].split()  # Remove '(' and split
+            if len(fields) >= 21:
+                values['grid_voltage'] = float(fields[0])
+                values['grid_frequency'] = float(fields[1]) 
+                values['output_voltage'] = float(fields[2])
+                values['output_frequency'] = float(fields[3]) 
+                values['output_apparent_power'] = int(fields[4])
+                values['output_power'] = int(fields[5])
+                values['output_load_percentage'] = int(fields[6])
+                values['battery_voltage'] = float(fields[8])
+                values['battery_charging_current'] = int(fields[9])
+                values['battery_soc'] = int(fields[10])
+                values['pv1_current'] = float(fields[12])
+                values['pv1_voltage'] = float(fields[13])
+                values['battery_discharge_current'] = int(fields[15])
+                values['pv1_power'] = int(fields[19])  # PV charging power
+
+                # Calculate currents
+                output_voltage = values['output_voltage']
+                if output_voltage > 0:
+                    values['output_current'] = values['output_apparent_power'] / output_voltage
+                else:
+                    values['output_current'] = 0.0
+
+                grid_voltage = values['grid_voltage']
+                if grid_voltage > 0:
+                    values['grid_power'] = 0  # Need to map, but no direct grid power in QPIGS
+                    # Assume grid power is 0 if in battery mode, or calculate if possible
+
+        # Parse QPIGS2 for PV2
+        qpigs2 = responses.get('QPIGS2')
+        if qpigs2:
+            fields = qpigs2[1:].split()
+            if len(fields) >= 3:
+                values['pv2_current'] = float(fields[0])
+                values['pv2_voltage'] = float(fields[1])
+                values['pv2_power'] = int(fields[2])
+
+                # Update total power
+                pv1_power = values.get('pv1_power', 0)
+                values['pv_total_power'] = pv1_power + values['pv2_power']
+
+        # Parse QMOD for mode
+        qmod = responses.get('QMOD')
+        if qmod:
+            mode_char = qmod[1]
+            if mode_char == 'L':
+                values['operation_mode'] = 2  # SUB - Line mode
+            elif mode_char == 'B':
+                values['operation_mode'] = 3  # SBU - Battery mode
+            elif mode_char == 'F':
+                values['operation_mode'] = 1  # Fault, but adjust
+            else:
+                values['operation_mode'] = 0  # Unknown
+
+        # Parse QPIWS if needed, but not used in data objects
+
+        # Frequencies *100 for internal format
+        if 'grid_frequency' in values:
+            values['grid_frequency'] = int(values['grid_frequency'] * 100)
+        if 'output_frequency' in values:
+            values['output_frequency'] = int(values['output_frequency'] * 100)
+
+        # Set missing to None or 0
+        values.setdefault('battery_temperature', 0)
+        values.setdefault('pv_temperature', 0)
+        values.setdefault('grid_current', 0.0)
+        values.setdefault('pv_charging_power', values.get('pv1_power', 0))
+        values.setdefault('pv_charging_current', values.get('pv1_current', 0.0))
+        values.setdefault('pv_generated_today', None)
+        values.setdefault('pv_generated_total', None)
+
+        return values
+
+    async def get_all_data(self) -> tuple[Optional[BatteryData], Optional[PVData], Optional[GridData], Optional[OutputData], Optional[SystemStatus]]:
+        """Get all inverter data in a single bulk request."""
+        logger.warning(f"Getting all data for model: {self.model}")
+        
+        if self.model_config.protocol == ProtocolType.ASCII:
+            command_responses = await self._query_ascii_commands(self.model_config.command_map)
+            values = self._parse_ascii_responses(command_responses)
+        else:
+            # Original numerical logic
+            register_groups = self._create_register_groups()
+            
+            results = await self._read_registers_bulk(register_groups)
+            if not results:
+                return None, None, None, None, None
+                
+            # Create a dictionary to store all the read values
+            values = {}
+            
+            # Process the results and apply scaling factors
+            for i, (start_address, count) in enumerate(register_groups):
+                if results[i] is None:
+                    continue
+                    
+                # Find which registers these values correspond to
+                for reg_name, config in self.model_config.register_map.items():
+                    if config.address >= start_address and config.address < start_address + count:
+                        # Calculate the index in the results array
+                        idx = config.address - start_address
+                        if idx < len(results[i]):
+                            # Process the value with the appropriate scaling factor
+                            values[reg_name] = self.model_config.process_value(reg_name, results[i][idx])
+        
+        # Create data objects from the processed values
+        battery = self._create_battery_data(values)
+        pv = self._create_pv_data(values)
+        grid = self._create_grid_data(values)
+        output = self._create_output_data(values)
+        status = self._create_system_status(values)
+        
+        return battery, pv, grid, output, status
+        
+    def _create_register_groups(self) -> list[tuple[int, int]]:
+        """Create optimized register groups for reading."""
+        # Get all valid register addresses
+        addresses = [
+            config.address for config in self.model_config.register_map.values() 
+            if config.address > 0  # Skip registers with address 0 (not supported)
+        ]
+        
         if not addresses:
             return []
-        groups: List[Tuple[int, int]] = []
-        start = end = addresses[0]
+            
+        # Sort addresses
+        addresses.sort()
+        
+        groups = []
+        current_start = addresses[0]
+        current_end = addresses[0]
+        
         for addr in addresses[1:]:
-            if addr <= end + 10:  # allow small holes
-                end = addr
+            # If address is consecutive or close enough, extend the current group
+            if addr <= current_end + 10:  # Allow small gaps to reduce number of requests
+                current_end = addr
             else:
-                groups.append((start, end - start + 1))
-                start = end = addr
-        groups.append((start, end - start + 1))
+                # Add the current group and start a new one
+                groups.append((current_start, current_end - current_start + 1))
+                current_start = addr
+                current_end = addr
+                
+        # Add the last group
+        groups.append((current_start, current_end - current_start + 1))
+        
         return groups
-
-    # the _create_* helpers are unchanged from the original file --------- #
-
-    def _create_battery_data(self, v: Dict[str, Any]) -> Optional[BatteryData]:
+        
+    def _create_battery_data(self, values: Dict[str, Any]) -> Optional[BatteryData]:
+        """Create BatteryData object from processed values."""
         try:
-            if all(k in v for k in ("battery_voltage", "battery_current", "battery_power", "battery_soc", "battery_temperature")):
+            if all(key in values for key in ["battery_voltage", "battery_current", "battery_power", "battery_soc", "battery_temperature"]):
                 return BatteryData(
-                    voltage=v["battery_voltage"],
-                    current=v["battery_current"],
-                    power=v["battery_power"],
-                    soc=v["battery_soc"],
-                    temperature=v["battery_temperature"],
+                    voltage=values["battery_voltage"],
+                    current=values["battery_current"],
+                    power=values["battery_power"],
+                    soc=values["battery_soc"],
+                    temperature=values["battery_temperature"]
                 )
-        except Exception as exc:
-            _LOGGER.debug("BatteryData build failed: %s", exc)
+        except Exception as e:
+            logger.warning(f"Failed to create BatteryData: {e}")
         return None
-
-    def _create_pv_data(self, v: Dict[str, Any]) -> Optional[PVData]:
+        
+    def _create_pv_data(self, values: Dict[str, Any]) -> Optional[PVData]:
+        """Create PVData object from processed values."""
         try:
-            if any(k in v for k in ("pv_total_power", "pv1_voltage", "pv2_voltage")):
+            # Check if we have at least some PV data
+            if any(key in values for key in ["pv_total_power", "pv1_voltage", "pv2_voltage"]):
                 return PVData(
-                    total_power=v.get("pv_total_power"),
-                    charging_power=v.get("pv_charging_power"),
-                    charging_current=v.get("pv_charging_current"),
-                    temperature=v.get("pv_temperature"),
-                    pv1_voltage=v.get("pv1_voltage"),
-                    pv1_current=v.get("pv1_current"),
-                    pv1_power=v.get("pv1_power"),
-                    pv2_voltage=v.get("pv2_voltage"),
-                    pv2_current=v.get("pv2_current"),
-                    pv2_power=v.get("pv2_power"),
-                    pv_generated_today=v.get("pv_energy_today"),
-                    pv_generated_total=v.get("pv_energy_total"),
+                    total_power=values.get("pv_total_power"),
+                    charging_power=values.get("pv_charging_power"),
+                    charging_current=values.get("pv_charging_current"),
+                    temperature=values.get("pv_temperature"),
+                    pv1_voltage=values.get("pv1_voltage"),
+                    pv1_current=values.get("pv1_current"),
+                    pv1_power=values.get("pv1_power"),
+                    pv2_voltage=values.get("pv2_voltage"),
+                    pv2_current=values.get("pv2_current"),
+                    pv2_power=values.get("pv2_power"),
+                    pv_generated_today=values.get("pv_generated_today"),
+                    pv_generated_total=values.get("pv_generated_total")
                 )
-        except Exception as exc:
-            _LOGGER.debug("PVData build failed: %s", exc)
+        except Exception as e:
+            logger.warning(f"Failed to create PVData: {e}")
         return None
-
-    def _create_grid_data(self, v: Dict[str, Any]) -> Optional[GridData]:
+        
+    def _create_grid_data(self, values: Dict[str, Any]) -> Optional[GridData]:
+        """Create GridData object from processed values."""
         try:
-            if any(k in v for k in ("grid_voltage", "grid_power", "grid_frequency")):
+            if any(key in values for key in ["grid_voltage", "grid_power"]):
                 return GridData(
-                    voltage=v.get("grid_voltage"),
-                    power=v.get("grid_power"),
-                    frequency=v.get("grid_frequency"),
+                    voltage=values.get("grid_voltage"),
+                    power=values.get("grid_power"),
+                    frequency=values.get("grid_frequency")
                 )
-        except Exception as exc:
-            _LOGGER.debug("GridData build failed: %s", exc)
+        except Exception as e:
+            logger.warning(f"Failed to create GridData: {e}")
         return None
-
-    def _create_output_data(self, v: Dict[str, Any]) -> Optional[OutputData]:
+        
+    def _create_output_data(self, values: Dict[str, Any]) -> Optional[OutputData]:
+        """Create OutputData object from processed values."""
         try:
-            if any(k in v for k in ("output_voltage", "output_power")):
+            if any(key in values for key in ["output_voltage", "output_power"]):
                 return OutputData(
-                    voltage=v.get("output_voltage"),
-                    current=v.get("output_current"),
-                    power=v.get("output_power"),
-                    apparent_power=v.get("output_apparent_power"),
-                    load_percentage=v.get("output_load_percentage"),
-                    frequency=v.get("output_frequency"),
+                    voltage=values.get("output_voltage"),
+                    current=values.get("output_current"),
+                    power=values.get("output_power"),
+                    apparent_power=values.get("output_apparent_power"),
+                    load_percentage=values.get("output_load_percentage"),
+                    frequency=values.get("output_frequency")
                 )
-        except Exception as exc:
-            _LOGGER.debug("OutputData build failed: %s", exc)
+        except Exception as e:
+            logger.warning(f"Failed to create OutputData: {e}")
         return None
-
-    def _create_system_status(self, v: Dict[str, Any]) -> Optional[SystemStatus]:
-        inverter_time = None
+        
+    def _create_system_status(self, values: Dict[str, Any]) -> Optional[SystemStatus]:
+        """Create SystemStatus object from processed values."""
         try:
-            if all(f"time_register_{i}" in v for i in range(6)):
-                inverter_time = _dt.datetime(
-                    v["time_register_0"],
-                    v["time_register_1"],
-                    v["time_register_2"],
-                    v["time_register_3"],
-                    v["time_register_4"],
-                    v["time_register_5"],
-                )
-        except Exception as exc:  # pragma: no cover
-            _LOGGER.debug("Timestamp build failed: %s", exc)
+            # Create timestamp if time registers are available
+            inverter_timestamp = None
+            if all(f"time_register_{i}" in values for i in range(6)):
+                try:
+                    year = values["time_register_0"]
+                    month = values["time_register_1"]
+                    day = values["time_register_2"]
+                    hour = values["time_register_3"]
+                    minute = values["time_register_4"]
+                    second = values["time_register_5"]
+                    inverter_timestamp = datetime.datetime(year, month, day, hour, minute, second)
+                except Exception as e:
+                    logger.warning(f"Failed to create timestamp: {e}")
 
-        if "operation_mode" in v:
-            try:
-                op_mode = OperatingMode(v["operation_mode"])
-            except ValueError:
-                op_mode = OperatingMode.SUB
-
-            return SystemStatus(
-                operating_mode=op_mode,
-                mode_name=op_mode.name if isinstance(op_mode, OperatingMode) else str(op_mode),
-                inverter_time=inverter_time,
-            )
-        return None
+            # Create operating mode
+            if "operation_mode" in values:
+                mode_value = values["operation_mode"]
+                try:
+                    op_mode = OperatingMode(mode_value)
+                    return SystemStatus(
+                        operating_mode=op_mode,
+                        mode_name=op_mode.name,
+                        inverter_time=inverter_timestamp
+                    )
+                except ValueError:
+                    return SystemStatus(
+                        operating_mode=OperatingMode.FAULT,
+                        mode_name=f"UNKNOWN ({mode_value})",
+                        inverter_time=inverter_timestamp
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to create SystemStatus: {e}")
+        return None 
