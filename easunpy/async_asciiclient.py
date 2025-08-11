@@ -24,12 +24,6 @@ class AsyncAsciiClient:
         self._server_lock = asyncio.Lock()
         self._transaction_id = 0x15a8
 
-    def _get_next_transaction_id(self) -> int:
-        """Get the next transaction ID."""
-        current_id = self._transaction_id
-        self._transaction_id = (self._transaction_id + 1) & 0xFFFF
-        return current_id
-
     def is_connected(self) -> bool:
         """Check if the client is currently connected."""
         return self._connection_established.is_set()
@@ -59,14 +53,12 @@ class AsyncAsciiClient:
             self._reader = None
             self._writer = None
 
-
     async def ensure_connection(self):
         """
         Ensures the server is running and sends a discovery packet.
         This method is non-blocking and safe to call on every update.
         """
         async with self._server_lock:
-            # Start the server if it's not already running
             if self._server is None:
                 try:
                     self._server = await asyncio.start_server(
@@ -75,11 +67,9 @@ class AsyncAsciiClient:
                     logger.info(f"Listening on {self.local_ip}:{self.port} for inverter connection...")
                 except OSError as e:
                     logger.error(f"Failed to start server on {self.local_ip}:{self.port}. Error: {e}")
-                    self._server = None # Ensure server is None on failure
+                    self._server = None
                     return
 
-        # Send a discovery packet to prompt the inverter to connect.
-        # This is done outside the lock to avoid holding it during network I/O.
         try:
             udp_message = f"set>server={self.local_ip}:{self.port};".encode('ascii')
             loop = asyncio.get_event_loop()
@@ -95,7 +85,8 @@ class AsyncAsciiClient:
 
     def _build_command_packet(self, command: str) -> bytes:
         """Builds the command packet with wrapper and CRC."""
-        trans_id = self._get_next_transaction_id()
+        trans_id = self._transaction_id
+        self._transaction_id = (self._transaction_id + 1) & 0xFFFF
         command_bytes = command.encode('ascii')
         
         crc = crc16_xmodem(command_bytes)
@@ -149,7 +140,7 @@ class AsyncAsciiClient:
                 try:
                     await self._writer.wait_closed()
                 except Exception:
-                    pass # Ignore errors on close
+                    pass
             
             if self._server:
                 self._server.close()
@@ -160,4 +151,3 @@ class AsyncAsciiClient:
             self._reader = None
             self._writer = None
             logger.info("Client disconnected and server stopped.")
-
