@@ -1,6 +1,7 @@
 # easunpy/async_asciiinverter.py
 # Implements the high-level logic for the Voltronic ASCII inverter.
 
+import asyncio
 import logging
 from typing import Optional, Tuple, Dict, Any
 
@@ -22,6 +23,7 @@ class AsyncAsciiInverter:
         try:
             fields = raw.strip('(').split(' ')
             if len(fields) < 21:
+                logger.warning(f"QPIGS response has fewer than 21 fields: {raw}")
                 return {}
             return {
                 'grid_voltage': float(fields[0]),
@@ -62,24 +64,25 @@ class AsyncAsciiInverter:
         Fetches all data from the inverter by sending multiple ASCII commands.
         """
         try:
-            # Send all commands concurrently
-            tasks = {
-                "qpgis": self.client.send_command("QPIGS"),
-                "qmod": self.client.send_command("QMOD"),
-            }
-            results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+            # Correctly create tasks to be gathered
+            qpgis_task = self.client.send_command("QPIGS")
+            qmod_task = self.client.send_command("QMOD")
+
+            results = await asyncio.gather(qpgis_task, qmod_task, return_exceptions=True)
             
             # Check for errors
-            for i, res in enumerate(results):
-                if isinstance(res, Exception):
-                    cmd = list(tasks.keys())[i]
-                    logger.error(f"Error executing command {cmd}: {res}")
-                    # Disconnect to force a reconnect on the next attempt
-                    await self.client.disconnect()
-                    return None, None, None, None, None
-
             qpgis_res, qmod_res = results
             
+            if isinstance(qpgis_res, Exception):
+                logger.error(f"Error executing QPIGS command: {qpgis_res}")
+                await self.client.disconnect()
+                return None, None, None, None, None
+
+            if isinstance(qmod_res, Exception):
+                logger.error(f"Error executing QMOD command: {qmod_res}")
+                await self.client.disconnect()
+                return None, None, None, None, None
+
             qpgis_data = self._parse_qpgis(qpgis_res)
             op_mode = self._parse_qmod(qmod_res)
 
@@ -88,11 +91,10 @@ class AsyncAsciiInverter:
 
             battery = BatteryData(
                 voltage=qpgis_data.get('battery_voltage', 0.0),
-                # Power is calculated: voltage * (charge_current - discharge_current)
                 power=int(qpgis_data.get('battery_voltage', 0.0) * (qpgis_data.get('battery_charging_current', 0) - qpgis_data.get('battery_discharge_current', 0))),
                 current=float(qpgis_data.get('battery_charging_current', 0) - qpgis_data.get('battery_discharge_current', 0)),
                 soc=qpgis_data.get('battery_soc', 0),
-                temperature=qpgis_data.get('inverter_temperature', 0) # Using inverter temp as battery temp
+                temperature=qpgis_data.get('inverter_temperature', 0)
             )
 
             pv = PVData(
@@ -101,25 +103,24 @@ class AsyncAsciiInverter:
                 charging_current=float(qpgis_data.get('pv1_current', 0.0)),
                 temperature=qpgis_data.get('inverter_temperature', 0),
                 pv1_voltage=qpgis_data.get('pv1_voltage', 0.0),
-                pv1_current=qpgis_data.get('pv1_current', 0.0),
+                pv1_current=float(qpgis_data.get('pv1_current', 0.0)),
                 pv1_power=int(qpgis_data.get('pv1_voltage', 0.0) * qpgis_data.get('pv1_current', 0.0)),
-                # This inverter model does not seem to support PV2 or energy generation stats
                 pv2_voltage=0.0,
                 pv2_current=0.0,
                 pv2_power=0,
-                pv_generated_today=0,
-                pv_generated_total=0,
+                pv_generated_today=0.0,
+                pv_generated_total=0.0,
             )
             
             grid = GridData(
                 voltage=qpgis_data.get('grid_voltage', 0.0),
-                power=0, # QPIGS does not provide grid power directly
+                power=0,
                 frequency=int(qpgis_data.get('grid_frequency', 0.0) * 100),
             )
 
             output = OutputData(
                 voltage=qpgis_data.get('output_voltage', 0.0),
-                current=0.0, # Not provided directly
+                current=0.0,
                 power=qpgis_data.get('output_power', 0),
                 apparent_power=qpgis_data.get('output_apparent_power', 0),
                 load_percentage=qpgis_data.get('output_load_percentage', 0),
@@ -129,17 +130,17 @@ class AsyncAsciiInverter:
             status = SystemStatus(
                 operating_mode=op_mode,
                 mode_name=op_mode.name if op_mode else "UNKNOWN",
-                inverter_time=None # Not provided by this inverter
+                inverter_time=None
             )
 
             return battery, pv, grid, output, status
 
         except Exception as e:
-            logger.error(f"Error getting all data from ASCII inverter: {e}")
-            await self.client.disconnect() # Force reconnect on next poll
+            logger.error(f"General error in get_all_data for ASCII inverter: {e}")
+            await self.client.disconnect()
             return None, None, None, None, None
             
     async def update_model(self, model: str):
-        """Placeholder for model updates, not applicable for this class."""
+        """Placeholder for model updates."""
         logger.debug(f"Model update called for ASCII inverter, but it only supports one model.")
         pass
