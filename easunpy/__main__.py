@@ -1,3 +1,4 @@
+# __main__.py
 #!/usr/bin/env python3
 """Command-line interface for EasunPy"""
 
@@ -107,129 +108,86 @@ def create_dashboard(inverter_data: InverterData, status_message: str | Text = "
         if inverter_data.pv.pv_generated_total is not None and inverter_data.pv.pv_generated_total > 0:
             pv_table.add_row("Generated Total", f"{inverter_data.pv.pv_generated_total:.2f}kWh")
 
-    grid_output_table = Table(title="Grid & Output Status")
-    grid_output_table.add_column("Parameter")
-    grid_output_table.add_column("Value")
+    grid_table = Table(title="Grid Status")
+    grid_table.add_column("Parameter")
+    grid_table.add_column("Value")
     
     if inverter_data.grid:
-        grid_output_table.add_row("Grid Voltage", f"{inverter_data.grid.voltage:.1f}V")
-        grid_output_table.add_row("Grid Power", f"{inverter_data.grid.power}W")
-        grid_output_table.add_row("Grid Frequency", f"{inverter_data.grid.frequency/100:.2f}Hz")
+        grid_table.add_row("Voltage", f"{inverter_data.grid.voltage:.1f}V")
+        grid_table.add_row("Power", f"{inverter_data.grid.power}W")
+        grid_table.add_row("Frequency", f"{inverter_data.grid.frequency/100:.2f}Hz")
+
+    output_table = Table(title="Output Status")
+    output_table.add_column("Parameter")
+    output_table.add_column("Value")
     
     if inverter_data.output:
-        grid_output_table.add_row("Output Voltage", f"{inverter_data.output.voltage:.1f}V")
-        grid_output_table.add_row("Output Current", f"{inverter_data.output.current:.1f}A")
-        grid_output_table.add_row("Output Power", f"{inverter_data.output.power}W")
-        grid_output_table.add_row("Output Load", f"{inverter_data.output.load_percentage}%")
-        grid_output_table.add_row("Output Frequency", f"{inverter_data.output.frequency/100:.1f}Hz")
+        output_table.add_row("Voltage", f"{inverter_data.output.voltage:.1f}V")
+        output_table.add_row("Current", f"{inverter_data.output.current:.1f}A")
+        output_table.add_row("Power", f"{inverter_data.output.power}W")
+        output_table.add_row("Apparent Power", f"{inverter_data.output.apparent_power}VA")
+        output_table.add_row("Load", f"{inverter_data.output.load_percentage}%")
+        output_table.add_row("Frequency", f"{inverter_data.output.frequency/100:.2f}Hz")
 
-    # Add timestamp and status with right alignment for status
-    header = Table.grid(padding=(0, 1))
-    header.add_column("timestamp", justify="left")
-    header.add_column("status", justify="right", width=40)  # Fixed width for status column
-    
-    # Convert status_message to Text if it's a string
-    if isinstance(status_message, str):
-        status_text = Text(status_message, style="yellow bold")
-    else:
-        status_text = status_message
-    
-    # Show both local time and last update time
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    last_update = inverter_data.last_update.strftime('%Y-%m-%d %H:%M:%S') if inverter_data.last_update else "Never"
-    
-    time_text = Text(f"Local Time: {current_time}\nLast Update: {last_update}", style="white")
-    header.add_row(time_text, status_text)
-
-    # Create layout with better organization
+    # Arrange layout
     layout.split_column(
-        Layout(header),
-        Layout(name="content", ratio=10)
+        Layout(name="upper"),
+        Layout(name="lower")
     )
     
-    # Split main content into three columns
-    layout["content"].split_row(
-        Layout(system_table, name="system"),
-        Layout(battery_table, name="battery"),
-        Layout(pv_table, name="pv"),
-        Layout(grid_output_table, name="grid")
-    )
-
-    return layout
-
-def create_info_layout(inverter_ip: str, local_ip: str, serial_number: str, status_message: str = "") -> Layout:
-    """Create a layout showing connection information."""
-    layout = Layout()
-    
-    # Create info table
-    info_table = Table(title="Inverter Monitor")
-    info_table.add_column("Parameter")
-    info_table.add_column("Value")
-    
-    info_table.add_row("Inverter IP", inverter_ip)
-    info_table.add_row("Local IP", local_ip)
-    info_table.add_row("Serial Number", serial_number)
-    info_table.add_row("Status", status_message)
-    
-    # Add timestamp with right-aligned status
-    header = Table.grid(padding=(0, 1))
-    header.add_column("timestamp", justify="left")
-    header.add_column("status", justify="right", width=40)  # Fixed width for status column
-    
-    header.add_row(
-        Text(f"Current Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", style="white"),
-        Text(status_message, style="yellow bold")
-    )
-
-    # Create layout
-    layout.split_column(
-        Layout(header),
-        Layout(name="main", ratio=8)
+    layout["upper"].split_row(
+        Layout(system_table),
+        Layout(battery_table)
     )
     
-    layout["main"].split_row(
-        Layout(info_table)
+    layout["lower"].split_row(
+        Layout(pv_table),
+        Layout(grid_table),
+        Layout(output_table)
     )
-
+    
+    # Add status message at bottom
+    layout["lower"].update(Layout(Text(status_message, style="bold magenta"), name="status"))
+    
     return layout
 
 async def print_single_update(inverter_data: InverterData):
-    """Print a single update in simple format."""
     console = Console()
     
-    if not inverter_data.system:
-        console.print("[red]No data received from inverter")
-        return
-
-    console.print("\n[bold]System Status")
-    console.print(f"Operating Mode: {inverter_data.system.mode_name}")
-    if inverter_data.system.inverter_time:
-        console.print(f"Inverter Time: {inverter_data.system.inverter_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    if inverter_data.system:
+        console.print("\n[bold]System Status[/bold]")
+        console.print(f"Operating Mode: {inverter_data.system.mode_name}")
+        if inverter_data.system.inverter_time:
+            console.print(f"Inverter Time: {inverter_data.system.inverter_time}")
 
     if inverter_data.battery:
-        console.print("\n[bold]Battery Status")
-        if inverter_data.battery.voltage is not None:
-            console.print(f"Voltage: {inverter_data.battery.voltage:.1f}V")
-        if inverter_data.battery.current is not None:
-            console.print(f"Current: {inverter_data.battery.current:.1f}A")
-        if inverter_data.battery.power is not None:
-            console.print(f"Power: {inverter_data.battery.power}W")
-        if inverter_data.battery.soc is not None:
-            console.print(f"State of Charge: {inverter_data.battery.soc}%")
-        if inverter_data.battery.temperature is not None:
-            console.print(f"Temperature: {inverter_data.battery.temperature}°C")
+        console.print("\n[bold]Battery Status[/bold]")
+        console.print(f"Voltage: {inverter_data.battery.voltage:.1f}V")
+        console.print(f"Current: {inverter_data.battery.current:.1f}A")
+        console.print(f"Power: {inverter_data.battery.power}W")
+        console.print(f"State of Charge: {inverter_data.battery.soc}%")
+        console.print(f"Temperature: {inverter_data.battery.temperature}°C")
 
     if inverter_data.pv:
-        console.print("\n[bold]Solar Status")
+        console.print("\n[bold]Solar Status[/bold]")
         if inverter_data.pv.total_power is not None:
             console.print(f"Total Power: {inverter_data.pv.total_power}W")
         if inverter_data.pv.charging_power is not None:
             console.print(f"Charging Power: {inverter_data.pv.charging_power}W")
-        if inverter_data.pv.pv1_voltage is not None and inverter_data.pv.pv1_current is not None and inverter_data.pv.pv1_power is not None:
-            console.print(f"PV1: {inverter_data.pv.pv1_voltage:.1f}V, {inverter_data.pv.pv1_current:.1f}A, {inverter_data.pv.pv1_power}W")
+        if inverter_data.pv.charging_current is not None:
+            console.print(f"Charging Current: {inverter_data.pv.charging_current:.1f}A")
+        if inverter_data.pv.pv1_voltage is not None:
+            console.print(f"PV1 Voltage: {inverter_data.pv.pv1_voltage:.1f}V")
+        if inverter_data.pv.pv1_current is not None:
+            console.print(f"PV1 Current: {inverter_data.pv.pv1_current:.1f}A")
+        if inverter_data.pv.pv1_power is not None:
+            console.print(f"PV1 Power: {inverter_data.pv.pv1_power}W")
         if inverter_data.pv.pv2_voltage is not None and inverter_data.pv.pv2_voltage > 0:
-            if inverter_data.pv.pv2_current is not None and inverter_data.pv.pv2_power is not None:
-                console.print(f"PV2: {inverter_data.pv.pv2_voltage:.1f}V, {inverter_data.pv.pv2_current:.1f}A, {inverter_data.pv.pv2_power}W")
+            console.print(f"PV2 Voltage: {inverter_data.pv.pv2_voltage:.1f}V")
+            if inverter_data.pv.pv2_current is not None:
+                console.print(f"PV2 Current: {inverter_data.pv.pv2_current:.1f}A")
+            if inverter_data.pv.pv2_power is not None:
+                console.print(f"PV2 Power: {inverter_data.pv.pv2_power}W")
         if inverter_data.pv.pv_generated_today is not None and inverter_data.pv.pv_generated_today > 0:
             console.print(f"Generated Today: {inverter_data.pv.pv_generated_today:.2f}kWh")
         if inverter_data.pv.pv_generated_total is not None and inverter_data.pv.pv_generated_total > 0:
@@ -334,4 +292,4 @@ async def main():
         return 1
 
 if __name__ == "__main__":
-    exit(asyncio.run(main())) 
+    exit(asyncio.run(main()))
