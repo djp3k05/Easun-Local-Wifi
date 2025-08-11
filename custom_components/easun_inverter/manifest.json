@@ -1,16 +1,17 @@
+# custom_components/easun_inverter/manifest.json
 {
   "domain": "easun_inverter",
-  "name": "Easun ISolar Inverter MCR",
+  "name": "Easun ISolar Inverter",
   "codeowners": ["@vgsolar2"],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/djp3k05/Easun-Local-Wifi",
+  "documentation": "https://github.com/vgsolar2/easunpy",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/djp3k05/Easun-Local-Wifi/issues",
+  "issue_tracker": "https://github.com/vgsolar2/easunpy/issues",
   "requirements": [
     "dataclasses>=0.6",
-    "git+https://github.com/djp3k05/Easun-Local-Wifi.git@main#egg=easunpy",
+    "easunpy",  // Removed version since local/modified
     "aiofiles>=23.2.1"
   ],
-  "version": "1.0.18"
-} 
+  "version": "2.0.1"  // Bumped version for new model support
+}
