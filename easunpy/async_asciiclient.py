@@ -22,6 +22,7 @@ class AsyncAsciiClient:
         self._server: Optional[asyncio.AbstractServer] = None
         self._connection_established = asyncio.Event()
         self._server_lock = asyncio.Lock()
+        self._cmd_lock = asyncio.Lock()  # Lock to ensure sequential command execution
         self._transaction_id = 0x15a8
 
     def is_connected(self) -> bool:
@@ -42,11 +43,10 @@ class AsyncAsciiClient:
         self._writer = writer
         self._connection_established.set()
 
-        # Keep the connection alive by waiting for it to close
         try:
             await writer.wait_closed()
         except Exception as e:
-            logger.error(f"Error in wait_closed: {e}")
+            logger.error(f"Error in wait_closed for {peername}: {e}")
         finally:
             logger.info(f"Connection from {peername} closed.")
             self._connection_established.clear()
@@ -110,27 +110,29 @@ class AsyncAsciiClient:
         if not self.is_connected() or self._writer is None or self._reader is None:
             raise ConnectionError("Cannot send command: Not connected.")
 
-        packet = self._build_command_packet(command)
-        logger.debug(f"Sending command '{command}': {packet.hex()}")
-        
-        try:
-            self._writer.write(packet)
-            await self._writer.drain()
+        # Ensure only one command is sent at a time
+        async with self._cmd_lock:
+            packet = self._build_command_packet(command)
+            logger.debug(f"Sending command '{command}': {packet.hex()}")
+            
+            try:
+                self._writer.write(packet)
+                await self._writer.drain()
 
-            header = await asyncio.wait_for(self._reader.readexactly(6), timeout=10)
-            length = int.from_bytes(header[4:6], 'big')
-            
-            response_data = await asyncio.wait_for(self._reader.readexactly(length), timeout=10)
-            
-            raw_data_bytes = response_data[2:-3]
-            parsed_response = raw_data_bytes.decode('ascii')
-            logger.debug(f"Parsed response for '{command}': {parsed_response}")
-            
-            return parsed_response
-        except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError) as e:
-            logger.error(f"Connection error during send_command for '{command}': {e}")
-            await self.disconnect()
-            raise
+                header = await asyncio.wait_for(self._reader.readexactly(6), timeout=10)
+                length = int.from_bytes(header[4:6], 'big')
+                
+                response_data = await asyncio.wait_for(self._reader.readexactly(length), timeout=10)
+                
+                raw_data_bytes = response_data[2:-3]
+                parsed_response = raw_data_bytes.decode('ascii')
+                logger.debug(f"Parsed response for '{command}': {parsed_response}")
+                
+                return parsed_response
+            except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError) as e:
+                logger.error(f"Connection error during send_command for '{command}': {e}")
+                await self.disconnect()
+                raise
 
     async def disconnect(self):
         """Disconnects and cleans up resources."""
