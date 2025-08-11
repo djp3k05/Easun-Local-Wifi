@@ -1,4 +1,3 @@
-# custom_components/easun_inverter/manifest.json
 {
   "domain": "easun_inverter",
   "name": "Easun ISolar Inverter",
@@ -10,8 +9,8 @@
   "issue_tracker": "https://github.com/vgsolar2/easunpy/issues",
   "requirements": [
     "dataclasses>=0.6",
-    "easunpy",  // Removed version since local/modified
+    "easunpy",
     "aiofiles>=23.2.1"
   ],
-  "version": "2.0.1"  // Bumped version for new model support
+  "version": "2.0.1"
 }
