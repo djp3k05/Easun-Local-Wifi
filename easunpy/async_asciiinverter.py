@@ -7,6 +7,7 @@ from typing import Optional, Tuple, Dict, Any
 
 from .async_asciiclient import AsyncAsciiClient
 from .models import BatteryData, PVData, GridData, OutputData, SystemStatus, OperatingMode
+from .async_ascii_commands import parse_qpgis, parse_qmod
 
 logger = logging.getLogger(__name__)
 
@@ -18,59 +19,28 @@ class AsyncAsciiInverter:
         self.client = AsyncAsciiClient(inverter_ip=inverter_ip, local_ip=local_ip)
         self.model = "VOLTRONIC_ASCII"
 
-    def _parse_qpgis(self, raw: str) -> Dict[str, Any]:
-        """Parses the response from the QPIGS command."""
-        try:
-            fields = raw.strip('(').split(' ')
-            if len(fields) < 21:
-                logger.warning(f"QPIGS response has fewer than 21 fields: {raw}")
-                return {}
-            return {
-                'grid_voltage': float(fields[0]),
-                'grid_frequency': float(fields[1]),
-                'output_voltage': float(fields[2]),
-                'output_frequency': float(fields[3]),
-                'output_apparent_power': int(fields[4]),
-                'output_power': int(fields[5]),
-                'output_load_percentage': int(fields[6]),
-                'battery_voltage': float(fields[8]),
-                'battery_charging_current': int(fields[9]),
-                'battery_soc': int(fields[10]),
-                'inverter_temperature': int(fields[11]),
-                'pv1_current': float(fields[12]),
-                'pv1_voltage': float(fields[13]),
-                'battery_discharge_current': int(fields[15]),
-                'pv_charging_power': int(fields[19]),
-            }
-        except (ValueError, IndexError) as e:
-            logger.error(f"Failed to parse QPIGS response '{raw}': {e}")
-            return {}
-
-    def _parse_qmod(self, raw: str) -> Optional[OperatingMode]:
-        """Parses the response from the QMOD command."""
-        mode_char = raw.strip('(')
-        mode_map = {
-            'P': OperatingMode.POWER_ON,
-            'S': OperatingMode.STANDBY,
-            'L': OperatingMode.LINE,
-            'B': OperatingMode.BATTERY,
-            'F': OperatingMode.FAULT,
-            'H': OperatingMode.POWER_SAVING,
-        }
-        return mode_map.get(mode_char)
-
     async def get_all_data(self) -> Tuple[Optional[BatteryData], Optional[PVData], Optional[GridData], Optional[OutputData], Optional[SystemStatus]]:
         """
         Fetches all data from the inverter by sending multiple ASCII commands.
+        This method uses a non-blocking connection pattern.
         """
+        # Ensure the server is running and trigger a connection attempt.
+        # This will not block, allowing HA to start up.
+        await self.client.ensure_connection()
+
+        # If not connected, log it and wait for the next update cycle.
+        # The background server will handle the incoming connection when it arrives.
+        if not self.client.is_connected():
+            logger.info("Inverter is not connected yet. Waiting for connection on the next update cycle.")
+            return None, None, None, None, None
+
         try:
-            # Correctly create tasks to be gathered
+            # If connected, proceed to fetch data.
             qpgis_task = self.client.send_command("QPIGS")
             qmod_task = self.client.send_command("QMOD")
 
             results = await asyncio.gather(qpgis_task, qmod_task, return_exceptions=True)
             
-            # Check for errors
             qpgis_res, qmod_res = results
             
             if isinstance(qpgis_res, Exception):
@@ -83,10 +53,11 @@ class AsyncAsciiInverter:
                 await self.client.disconnect()
                 return None, None, None, None, None
 
-            qpgis_data = self._parse_qpgis(qpgis_res)
-            op_mode = self._parse_qmod(qmod_res)
+            qpgis_data = parse_qpgis(qpgis_res)
+            op_mode = parse_qmod(qmod_res)
 
             if not qpgis_data:
+                logger.warning("Parsing QPIGS data resulted in an empty dictionary.")
                 return None, None, None, None, None
 
             battery = BatteryData(
@@ -102,9 +73,9 @@ class AsyncAsciiInverter:
                 charging_power=qpgis_data.get('pv_charging_power', 0),
                 charging_current=float(qpgis_data.get('pv1_current', 0.0)),
                 temperature=qpgis_data.get('inverter_temperature', 0),
-                pv1_voltage=qpgis_data.get('pv1_voltage', 0.0),
+                pv1_voltage=float(qpgis_data.get('pv1_voltage', 0.0)),
                 pv1_current=float(qpgis_data.get('pv1_current', 0.0)),
-                pv1_power=int(qpgis_data.get('pv1_voltage', 0.0) * qpgis_data.get('pv1_current', 0.0)),
+                pv1_power=int(float(qpgis_data.get('pv1_voltage', 0.0)) * float(qpgis_data.get('pv1_current', 0.0))),
                 pv2_voltage=0.0,
                 pv2_current=0.0,
                 pv2_power=0,
@@ -114,13 +85,13 @@ class AsyncAsciiInverter:
             
             grid = GridData(
                 voltage=qpgis_data.get('grid_voltage', 0.0),
-                power=0,
+                power=0, # Not provided by QPIGS
                 frequency=int(qpgis_data.get('grid_frequency', 0.0) * 100),
             )
 
             output = OutputData(
                 voltage=qpgis_data.get('output_voltage', 0.0),
-                current=0.0,
+                current=0.0, # Not provided by QPIGS
                 power=qpgis_data.get('output_power', 0),
                 apparent_power=qpgis_data.get('output_apparent_power', 0),
                 load_percentage=qpgis_data.get('output_load_percentage', 0),
