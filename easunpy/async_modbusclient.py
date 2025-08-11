@@ -1,4 +1,3 @@
-# async_modbusclient.py
 import asyncio
 import logging
 import socket

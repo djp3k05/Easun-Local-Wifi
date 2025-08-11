@@ -1,4 +1,3 @@
-# isolar.py
 import logging
 from typing import List, Optional
 from .modbusclient import ModbusClient, create_request, decode_modbus_response

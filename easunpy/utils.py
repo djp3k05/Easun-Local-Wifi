@@ -1,4 +1,3 @@
-# utils.py
 import socket
 
 def get_local_ip():

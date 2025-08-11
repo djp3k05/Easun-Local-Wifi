@@ -1,4 +1,3 @@
-# discover.py
 import socket
 import time
 

@@ -1,10 +1,9 @@
-# modbusclient.py
 import socket
 import struct
 import time
 import logging  # Import logging
 
-from easunpy.crc import crc16_modbus, crc16_xmodem, adjust_crc_byte
+from easunpy.crc import crc16_modbus
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -101,39 +100,34 @@ def run_single_request(inverter_ip: str, local_ip: str, request: str):
     return response
 
 # Función para crear la solicitud completa
-def create_request(transaction_id: int, protocol_id: int = 0x0001, ascii_command: Optional[str] = None,
-                   unit_id: int = 0x01, function_code: int = 0x03,
-                   register_address: int = 0, register_count: int = 1) -> str:
+def create_request(transaction_id: int, protocol_id: int, unit_id: int, function_code: int,
+                   register_address: int, register_offset: int) -> str:
     """
-    Create a Modbus command with the correct length and CRC for the RTU packet or ASCII command.
+    Create a Modbus command with the correct length and CRC for the RTU packet.
     """
-    if ascii_command is not None:
-        # ASCII mode
-        rtu_packet = bytearray(ascii_command.encode('ascii'))
-        crc = crc16_xmodem(rtu_packet)
-        crc_high = adjust_crc_byte((crc >> 8) & 0xFF)
-        crc_low = adjust_crc_byte(crc & 0xFF)
-        rtu_packet.extend([crc_high, crc_low, 0x0D])
-    else:
-        # Numerical mode
-        rtu_packet = bytearray([
-            unit_id,
-            function_code,
-            (register_address >> 8) & 0xFF, register_address & 0xFF,
-            (register_count >> 8) & 0xFF, register_count & 0xFF
-        ])
-        crc = crc16_modbus(rtu_packet)
-        crc_low = crc & 0xFF
-        crc_high = (crc >> 8) & 0xFF
-        rtu_packet.extend([crc_low, crc_high])
+    # Construir el paquete RTU
+    rtu_packet = bytearray([
+        unit_id,
+        function_code,
+        (register_address >> 8) & 0xFF, register_address & 0xFF,
+        (register_offset >> 8) & 0xFF, register_offset & 0xFF
+    ])
 
-    # Prefix with FF 04
+    # Calcular el CRC para el paquete RTU
+    crc = crc16_modbus(rtu_packet)
+    crc_low = crc & 0xFF
+    crc_high = (crc >> 8) & 0xFF
+
+    # Agregar CRC al paquete RTU
+    rtu_packet.extend([crc_low, crc_high])
+    
+    # Campo adicional `FF04`
     rtu_packet = bytearray([0xFF, 0x04]) + rtu_packet
     
-    # Calculate total length
+    # Calcular la longitud total (incluye solo RTU) + TCP
     length = len(rtu_packet)
     
-    # Build full command
+    # Construir el comando completo
     command = bytearray([
         (transaction_id >> 8) & 0xFF, transaction_id & 0xFF,  # Transaction ID
         (protocol_id >> 8) & 0xFF, protocol_id & 0xFF,        # Protocol ID
@@ -142,54 +136,46 @@ def create_request(transaction_id: int, protocol_id: int = 0x0001, ascii_command
 
     return command.hex()
 
-def decode_modbus_response(response: str | bytes, register_count: int=1, data_format: str="Int", is_ascii: bool = False):
+def decode_modbus_response(response: str, register_count: int=1, data_format: str="Int"):
     """
     Decodes a Modbus TCP response using the provided format.
-    :param response: Hexadecimal string or bytes of the Modbus response.
-    :return: List of values for numerical, or string for ASCII.
+    :param request: Hexadecimal string of the Modbus request.
+    :param response: Hexadecimal string of the Modbus response.
+    :return: Dictionary with register addresses and their values.
     """
-    if isinstance(response, str):
-        response = bytes.fromhex(response)
+    # Extract common fields from response
+    req_id = response[:8]
+    length_hex = response[8:12]
+    length = int(length_hex, 16)
+    
+    # Extract RTU payload
+    rtu_payload = response[12:12 + length * 2]
 
-    if len(response) < 9:
-        return [] if not is_ascii else None
+    # Decode RTU Payload
+    extra_field = rtu_payload[:2]
+    device_address = rtu_payload[2:4]
+    function_code = rtu_payload[4:6]
+    num_data_bytes = int(rtu_payload[8:10], 16)
+    data_bytes = rtu_payload[10:10 + num_data_bytes * 2]
+    # Decode the register values and pair with addresses
+    values = []
+    for i, _ in enumerate(range(register_count)):
+        if data_format == "Int":
+            # Handle signed 16-bit integers
+            value = int(data_bytes[i * 4:(i + 1) * 4], 16)
+            # If the highest bit is set (value >= 32768), it's negative
+            if value >= 32768:  # 0x8000
+                value -= 65536  # 0x10000
+        elif data_format == "UnsignedInt":
+            # Handle unsigned 16-bit integers (0 to 65535)
+            value = int(data_bytes[i * 4:(i + 1) * 4], 16)
+        elif data_format == "Float":
+            value = struct.unpack('f', bytes.fromhex(data_bytes[i * 4:(i + 1) * 4]))[0]
+        else:
+            raise ValueError(f"Unsupported data format: {data_format}")
+        values.append(value)
 
-    # trans_id = response[0:2]
-    # proto_id = response[2:4]
-    len_bytes = response[4:6]
-    msg_len = int.from_bytes(len_bytes, 'big')
-
-    if len(response) < (6 + msg_len):
-        return [] if not is_ascii else None
-
-    payload = response[6:6+msg_len]
-
-    if len(payload) < 3:
-        return [] if not is_ascii else None
-
-    # unit = payload[0]
-    # func = payload[1]
-
-    if is_ascii:
-        data_bytes = payload[2:]
-        if len(data_bytes) < 3:
-            return None
-        return data_bytes[:-3].decode('ascii')
-    else:
-        byte_count = payload[2]
-        data_bytes = payload[3:]
-        values = []
-        for i in range(register_count):
-            start = i * 2
-            if start + 2 > len(data_bytes):
-                break
-            val_bytes = data_bytes[start:start+2]
-            val = int.from_bytes(val_bytes, 'big')
-            if data_format == "Int":
-                if val & 0x8000:
-                    val -= 0x10000
-            values.append(val)
-        return values
+    return values
 
 def get_registers_from_request(request: str) -> list:
     """
