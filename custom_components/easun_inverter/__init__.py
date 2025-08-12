@@ -1,238 +1,48 @@
+# custom_components/easun_inverter/__init__.py
 """The Easun ISolar Inverter integration."""
 from __future__ import annotations
+import asyncio
+import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, ServiceCall
-import homeassistant.helpers.config_validation as cv
-import logging
-from easunpy.modbusclient import create_request 
-from datetime import datetime
-import json
-import os
-from aiofiles import open as async_open
-from aiofiles.os import makedirs
-import asyncio
+from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
-
 DOMAIN = "easun_inverter"
-
-# List of platforms to support. There should be a matching .py file for each,
-# eg. switch.py and sensor.py
 PLATFORMS: list[Platform] = [Platform.SENSOR]
-
-# Use config_entry_only_config_schema since we only support config flow
-CONFIG_SCHEMA = cv.config_entry_only_config_schema("easun_inverter")
-
-async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
-    """Migrate old entry."""
-    _LOGGER.debug("Migrating from version %s", config_entry.version)
-
-    if config_entry.version < 4:
-        new_data = {**config_entry.data}
-        
-        # Add model with default value if it doesn't exist
-        if "model" not in new_data:
-            new_data["model"] = "ISOLAR_SMG_II_11K"
-            
-        # Update the entry with new data and version
-        hass.config_entries.async_update_entry(
-            config_entry,
-            data=new_data,
-            version=4
-        )
-        _LOGGER.info("Migration to version %s successful", 4)
-
-    return True
-
-async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up the Easun ISolar Inverter component."""
-    _LOGGER.debug("Setting up Easun ISolar Inverter component")
-    return True
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Easun ISolar Inverter from a config entry."""
-    if entry.version < 4:
-        if not await async_migrate_entry(hass, entry):
-            return False
-
-    model = entry.data["model"]  # No default - should be required
-    _LOGGER.warning(f"Setting up inverter with model: {model}, config data: {entry.data}")
-    
-    # Initialize domain data
-    hass.data.setdefault(DOMAIN, {})
-    
-    async def handle_register_scan(call: ServiceCall) -> None:
-        """Handle the register scan service."""
-        start = call.data.get("start_register", 0)
-        count = call.data.get("register_count", 5)
-        
-        # Get the coordinator from the entry we stored in sensor.py
-        entry_data = hass.data[DOMAIN].get(entry.entry_id)
-        if not entry_data or "coordinator" not in entry_data:
-            _LOGGER.error("No coordinator found. Is the integration set up?")
-            return
-            
-        coordinator = entry_data["coordinator"]
-        inverter = coordinator._isolar
-        
-        _LOGGER.debug(f"Starting register scan from {start} for {count} registers")
-        
-        # Create register groups in chunks of 10
-        register_groups = []
-        for chunk_start in range(start, start + count, 10):
-            chunk_size = min(10, start + count - chunk_start)  # Handle last chunk
-            register_groups.append((chunk_start, chunk_size))
-        
-        # Read all registers in bulk
-        results = []
-        try:
-            responses = await inverter._read_registers_bulk(register_groups, "Int")
-            if responses:
-                for group_idx, response in enumerate(responses):
-                    if response:  # Check if we got values for this group
-                        chunk_start = register_groups[group_idx][0]
-                        for i, value in enumerate(response):
-                            if value != 0:  # Only store non-zero values
-                                reg = chunk_start + i
-                                results.append({
-                                    "register": reg,
-                                    "hex": f"0x{reg:04x}",
-                                    "value": value,
-                                    "raw": f"Register {reg}: {value}"
-                                })
-        except Exception as e:
-            _LOGGER.error(f"Error reading registers: {e}")
-        
-        # Store results in hass.data for the sensor
-        scan_data = {
-            "timestamp": datetime.now().isoformat(),
-            "results": results,
-            "start_register": start,
-            "count": count
-        }
-        hass.data[DOMAIN]["last_scan"] = scan_data
-        
-        # Save to www folder
-        www_dir = hass.config.path("www")
-        try:
-            if not os.path.exists(www_dir):
-                await makedirs(www_dir)
-            
-            filename = os.path.join(www_dir, "easun_register_scan.json")
-            async with async_open(filename, 'w') as f:
-                await f.write(json.dumps(scan_data, indent=2))
-            _LOGGER.info(f"Scan complete. Found {len(results)} registers with values")
-        except Exception as e:
-            _LOGGER.error(f"Error saving scan results: {e}")
-
-    async def handle_device_scan(call: ServiceCall) -> None:
-        """Handle the device ID scan service."""
-        start_id = call.data.get("start_id", 0)
-        end_id = call.data.get("end_id", 5)
-        
-        entry_data = hass.data[DOMAIN].get(entry.entry_id)
-        if not entry_data or "coordinator" not in entry_data:
-            _LOGGER.error("No coordinator found. Is the integration set up?")
-            return
-            
-        coordinator = entry_data["coordinator"]
-        inverter = coordinator._isolar
-        
-        _LOGGER.debug(f"Starting device scan from ID {start_id} to {end_id}")
-        
-        results = []
-        
-        for device_id in range(start_id, end_id + 1):
-            try:
-                # Create request
-                request = [create_request(
-                    inverter._get_next_transaction_id(),
-                    0x0001, device_id, 0x03,
-                    0x0115,
-                    1
-                )]
-                
-                # Send request and get raw response
-                responses = await inverter.client.send_bulk(request)
-                _LOGGER.debug(f"Responses: {responses}")
-                response_hex = responses[0] if responses else None
-                
-                result = {
-                    "device_id": device_id,
-                    "hex": f"0x{device_id:02x}",
-                    "request": request,
-                    "response": response_hex,
-                }
-        
-                ERROR_RESPONSE = "00010002ff04"  # Protocol error response
-                
-                if response_hex: 
-                    if response_hex[4:] == ERROR_RESPONSE:
-                        result["status"] = "Protocol Error"
-                        _LOGGER.debug(f"Device 0x{device_id:02x} gave protocol error: {response_hex}")
-                    else:
-                        result["status"] = "Valid Response"
-                        _LOGGER.debug(f"Device 0x{device_id:02x} gave valid response: {response_hex}")
-                else:
-                    _LOGGER.debug(f"Device 0x{device_id:02x} gave no response")
-                    result["status"] = "No Response"
-                
-                results.append(result)
-                
-            except Exception as e:
-                _LOGGER.debug(f"Error with device ID {device_id:02x}: {e}")
-                results.append({
-                    "device_id": device_id,
-                    "hex": f"0x{device_id:02x}",
-                    "status": f"Error: {str(e)}",
-                    "request": request if 'request' in locals() else None,
-                    "response": None
-                })
-            
-            await asyncio.sleep(0.1)  # Small delay between requests
-        
-        # Store results
-        scan_data = {
-            "timestamp": datetime.now().isoformat(),
-            "results": results,
-            "start_id": start_id,
-            "end_id": end_id
-        }
-        hass.data[DOMAIN]["device_scan"] = scan_data
-        
-        # Log summary
-        valid_responses = [r for r in results if r["status"] == "Valid Response"]
-        _LOGGER.info(f"Device scan complete. Found {len(valid_responses)} valid responses")
-        for r in valid_responses:
-            _LOGGER.info(f"Device {r['hex']}: Request={r['request']}, Response={r['response']}, Decoded={r.get('decoded')}")
-
-    # Register both services
-    hass.services.async_register(DOMAIN, "register_scan", handle_register_scan)
-    hass.services.async_register(DOMAIN, "device_scan", handle_device_scan)
-    
-    # Forward the setup to the sensor platform
+    _LOGGER.warning(
+        "Setting up inverter with model: %s, config data: %s",
+        entry.data.get("model"),
+        entry.data,
+    )
+    # Forward the setup to the sensor platform.
+    # The sensor platform will create the inverter object and coordinator.
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    
     return True
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    _LOGGER.debug("Unloading Easun ISolar Inverter config entry")
-    
-    # Cleanup any update listeners
-    if entry.entry_id in hass.data[DOMAIN]:
-        if "update_listener" in hass.data[DOMAIN][entry.entry_id]:
-            _LOGGER.debug("Cancelling update listener")
-            hass.data[DOMAIN][entry.entry_id]["update_listener"]()
-    
-    # Unload the sensor platform
+    _LOGGER.debug("Unloading Easun ISolar Inverter config entry: %s", entry.entry_id)
+
+    # Unload the sensor platform first.
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+    if unload_ok:
+        # Retrieve the inverter instance stored in the domain data
+        entry_data = hass.data[DOMAIN].pop(entry.entry_id, None)
+        if entry_data and "inverter" in entry_data:
+            inverter = entry_data["inverter"]
+            # For ASCII models, we need to explicitly disconnect to release the port
+            if hasattr(inverter, "client") and hasattr(inverter.client, "disconnect"):
+                try:
+                    _LOGGER.info("Disconnecting from ASCII inverter to release port.")
+                    # Create a task to run the disconnect coroutine
+                    await asyncio.create_task(inverter.client.disconnect())
+                except Exception as e:
+                    _LOGGER.error("Error during inverter disconnect: %s", e)
     
-    # Clean up domain data
-    if unload_ok and entry.entry_id in hass.data[DOMAIN]:
-        _LOGGER.debug("Removing entry data")
-        hass.data[DOMAIN].pop(entry.entry_id)
-    
-    return unload_ok 
+    return unload_ok
