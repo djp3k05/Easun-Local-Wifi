@@ -1,6 +1,6 @@
 {
   "domain": "easun_inverter",
-  "name": "Easun ISolar Inverter MCR",
+  "name": "Easun ISolar Inverter",
   "codeowners": ["@vgsolar2"],
   "config_flow": true,
   "dependencies": [],
