@@ -1,6 +1,5 @@
 # easunpy/async_isolar.py
 # This file now acts as the main class for Modbus-based inverters.
-# The logic has been separated from the new ASCII inverter logic.
 
 import logging
 from typing import List, Optional, Dict, Tuple, Any
@@ -58,10 +57,7 @@ class AsyncISolar:
                 try:
                     if response:
                         decoded = decode_modbus_response(response, count, data_format)
-                        logger.debug(f"Decoded values for group {i}: {decoded}")
                         decoded_groups[i] = decoded
-                    else:
-                        logger.warning(f"No response for register group {register_groups[i]}")
                 except Exception as e:
                     logger.warning(f"Failed to decode register group {register_groups[i]}: {e}")
                 
@@ -71,7 +67,7 @@ class AsyncISolar:
             logger.error(f"Error reading register groups: {str(e)}")
             return [None] * len(register_groups)
 
-    async def get_all_data(self) -> tuple[Optional[BatteryData], Optional[PVData], Optional[GridData], Optional[OutputData], Optional[SystemStatus]]:
+    async def get_all_data(self) -> tuple[Optional[BatteryData], Optional[PVData], Optional[GridData], Optional[OutputData], Optional[SystemStatus], None]:
         """Get all inverter data in a single bulk request."""
         logger.info(f"Getting all data for Modbus model: {self.model}")
         
@@ -79,7 +75,7 @@ class AsyncISolar:
         
         results = await self._read_registers_bulk(register_groups)
         if not results:
-            return None, None, None, None, None
+            return None, None, None, None, None, None
             
         values = {}
         
@@ -99,7 +95,8 @@ class AsyncISolar:
         output = self._create_output_data(values)
         status = self._create_system_status(values)
         
-        return battery, pv, grid, output, status
+        # Modbus models do not have rating data, so return None for the 6th element
+        return battery, pv, grid, output, status, None
         
     def _create_register_groups(self) -> list[tuple[int, int]]:
         """Create optimized register groups for reading."""
@@ -127,69 +124,44 @@ class AsyncISolar:
         return groups
         
     def _create_battery_data(self, values: Dict[str, Any]) -> Optional[BatteryData]:
-        """Create BatteryData object from processed values."""
         try:
             return BatteryData(
-                voltage=values.get("battery_voltage"),
-                current=values.get("battery_current"),
-                power=values.get("battery_power"),
-                soc=values.get("battery_soc"),
+                voltage=values.get("battery_voltage"), current=values.get("battery_current"),
+                power=values.get("battery_power"), soc=values.get("battery_soc"),
                 temperature=values.get("battery_temperature")
             )
-        except (TypeError, KeyError) as e:
-            logger.warning(f"Failed to create BatteryData, missing key: {e}")
-        return None
+        except (TypeError, KeyError): return None
         
     def _create_pv_data(self, values: Dict[str, Any]) -> Optional[PVData]:
-        """Create PVData object from processed values."""
         try:
             return PVData(
-                total_power=values.get("pv_total_power"),
-                charging_power=values.get("pv_charging_power"),
-                charging_current=values.get("pv_charging_current"),
-                temperature=values.get("pv_temperature"),
-                pv1_voltage=values.get("pv1_voltage"),
-                pv1_current=values.get("pv1_current"),
-                pv1_power=values.get("pv1_power"),
-                pv2_voltage=values.get("pv2_voltage"),
-                pv2_current=values.get("pv2_current"),
-                pv2_power=values.get("pv2_power"),
-                pv_generated_today=values.get("pv_energy_today"),
-                pv_generated_total=values.get("pv_energy_total")
+                total_power=values.get("pv_total_power"), charging_power=values.get("pv_charging_power"),
+                charging_current=values.get("pv_charging_current"), temperature=values.get("pv_temperature"),
+                pv1_voltage=values.get("pv1_voltage"), pv1_current=values.get("pv1_current"),
+                pv1_power=values.get("pv1_power"), pv2_voltage=values.get("pv2_voltage"),
+                pv2_current=values.get("pv2_current"), pv2_power=values.get("pv2_power"),
+                pv_generated_today=values.get("pv_energy_today"), pv_generated_total=values.get("pv_energy_total")
             )
-        except (TypeError, KeyError) as e:
-            logger.warning(f"Failed to create PVData, missing key: {e}")
-        return None
+        except (TypeError, KeyError): return None
         
     def _create_grid_data(self, values: Dict[str, Any]) -> Optional[GridData]:
-        """Create GridData object from processed values."""
         try:
             return GridData(
-                voltage=values.get("grid_voltage"),
-                power=values.get("grid_power"),
+                voltage=values.get("grid_voltage"), power=values.get("grid_power"),
                 frequency=values.get("grid_frequency")
             )
-        except (TypeError, KeyError) as e:
-            logger.warning(f"Failed to create GridData, missing key: {e}")
-        return None
+        except (TypeError, KeyError): return None
         
     def _create_output_data(self, values: Dict[str, Any]) -> Optional[OutputData]:
-        """Create OutputData object from processed values."""
         try:
             return OutputData(
-                voltage=values.get("output_voltage"),
-                current=values.get("output_current"),
-                power=values.get("output_power"),
-                apparent_power=values.get("output_apparent_power"),
-                load_percentage=values.get("output_load_percentage"),
-                frequency=values.get("output_frequency")
+                voltage=values.get("output_voltage"), current=values.get("output_current"),
+                power=values.get("output_power"), apparent_power=values.get("output_apparent_power"),
+                load_percentage=values.get("output_load_percentage"), frequency=values.get("output_frequency")
             )
-        except (TypeError, KeyError) as e:
-            logger.warning(f"Failed to create OutputData, missing key: {e}")
-        return None
+        except (TypeError, KeyError): return None
         
     def _create_system_status(self, values: Dict[str, Any]) -> Optional[SystemStatus]:
-        """Create SystemStatus object from processed values."""
         inverter_timestamp = None
         if all(f"time_register_{i}" in values for i in range(6)):
             try:
@@ -213,5 +185,6 @@ class AsyncISolar:
         return SystemStatus(
             operating_mode=op_mode,
             mode_name=mode_name,
-            inverter_time=inverter_timestamp
+            inverter_time=inverter_timestamp,
+            warnings=[] # Explicitly provide empty list for Modbus models
         )
