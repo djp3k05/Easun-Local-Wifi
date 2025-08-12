@@ -1,6 +1,4 @@
 # easunpy/async_ascii_commands.py
-# This file defines the commands and their parsers for the ASCII protocol.
-
 import logging
 from typing import Dict, Any, Optional, List
 from .models import OperatingMode
@@ -12,7 +10,6 @@ def parse_qpgis(raw: str) -> Dict[str, Any]:
     try:
         fields = raw.strip('(').split(' ')
         if len(fields) < 21:
-            logger.warning(f"QPIGS response has fewer than 21 fields: {raw}")
             return {}
         return {
             'grid_voltage': float(fields[0]),
@@ -22,13 +19,16 @@ def parse_qpgis(raw: str) -> Dict[str, Any]:
             'output_apparent_power': int(fields[4]),
             'output_power': int(fields[5]),
             'output_load_percentage': int(fields[6]),
+            'bus_voltage': int(fields[7]),
             'battery_voltage': float(fields[8]),
             'battery_charging_current': int(fields[9]),
             'battery_soc': int(fields[10]),
             'inverter_temperature': int(fields[11]),
-            'pv1_current': float(fields[12]),
-            'pv1_voltage': float(fields[13]),
+            'pv1_input_current': float(fields[12]),
+            'pv1_input_voltage': float(fields[13]),
+            'battery_voltage_scc': float(fields[14]),
             'battery_discharge_current': int(fields[15]),
+            'device_status': fields[16],
             'pv_charging_power': int(fields[19]),
         }
     except (ValueError, IndexError) as e:
@@ -50,14 +50,15 @@ def parse_qpiri(raw: str) -> Dict[str, Any]:
     try:
         fields = raw.strip('(').split(' ')
         if len(fields) < 25:
-            logger.warning(f"QPIRI response has fewer than 25 fields: {raw}")
             return {}
         
-        battery_type_map = {'0': "AGM", '1': "Flooded", '2': "User", '3': "Pylontech"}
+        battery_type_map = {'0': "AGM", '1': "Flooded", '2': "User Defined", '3': "Pylontech"}
         priority_map = {'0': "Utility->Solar->Battery", '1': "Solar->Utility->Battery", '2': "Solar->Battery->Utility"}
         charger_priority_map = {'1': "Solar First", '2': "Solar and Utility", '3': "Solar Only"}
 
         return {
+            'grid_rating_voltage': float(fields[0]),
+            'grid_rating_current': float(fields[1]),
             'ac_output_rating_voltage': float(fields[2]),
             'ac_output_rating_frequency': float(fields[3]),
             'ac_output_rating_current': float(fields[4]),
@@ -83,8 +84,7 @@ def parse_qpiws(raw: str) -> List[str]:
     warnings = []
     try:
         bits = raw.strip('(')
-        if len(bits) < 32:
-            return ["Invalid response length"]
+        if len(bits) < 32: return ["Invalid response length"]
         
         warning_map = {
             1: "Inverter fault", 2: "Bus over-voltage", 3: "Bus under-voltage",
@@ -108,9 +108,7 @@ def parse_qpgis2(raw: str) -> Dict[str, Any]:
     """Parses the response from the QPIGS2 command."""
     try:
         fields = raw.strip('(').split(' ')
-        if len(fields) < 3:
-            logger.warning(f"QPIGS2 response has fewer than 3 fields: {raw}")
-            return {}
+        if len(fields) < 3: return {}
         return {
             'pv2_input_current': float(fields[0]),
             'pv2_input_voltage': float(fields[1]),
