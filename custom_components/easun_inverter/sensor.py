@@ -44,9 +44,10 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_
     
     data_map = {"battery": 0, "pv": 1, "grid": 2, "output": 3, "system": 4, "rating": 5}
 
-    def s(id, name, unit, type, attr, dc=None, icon=None):
+    # Corrected the function signature to include 'converter'
+    def s(id, name, unit, type, attr, dc=None, icon=None, converter=None):
         """Helper to create sensor definitions."""
-        return EasunSensor(coordinator, id, name, unit, type, attr, data_map.get(type), dc, icon)
+        return EasunSensor(coordinator, id, name, unit, type, attr, data_map.get(type), dc, icon, converter)
 
     sensors_to_add = [
         # Battery Sensors
@@ -67,7 +68,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_
 
         # Grid and Output Sensors
         s("grid_voltage", "Grid Voltage", UnitOfElectricPotential.VOLT, "grid", "voltage", SensorDeviceClass.VOLTAGE),
-        s("grid_frequency", "Grid Frequency", UnitOfFrequency.HERTZ, "grid", "frequency", SensorDeviceClass.FREQUENCY, lambda v: v / 100 if v else None),
+        s("grid_frequency", "Grid Frequency", UnitOfFrequency.HERTZ, "grid", "frequency", SensorDeviceClass.FREQUENCY, converter=lambda v: v / 100 if v is not None else None),
         s("output_power", "Output Power", UnitOfPower.WATT, "output", "power", SensorDeviceClass.POWER),
         s("output_apparent_power", "Output Apparent Power", UnitOfApparentPower.VOLT_AMPERE, "output", "apparent_power", SensorDeviceClass.APPARENT_POWER),
         s("output_load_percentage", "Output Load", PERCENTAGE, "output", "load_percentage", icon="mdi:percent"),
